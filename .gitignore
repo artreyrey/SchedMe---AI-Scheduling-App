@@ -1,7 +1,43 @@
+# Dependencies and generated builds
 node_modules/
 dist/
+coverage/
+.cache/
+
+# Hosting and Firebase local state
 .vercel/
-.env
-.env.*
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+
+# Environment files. Keep only the credential-free template.
+.env*
 !.env.example
+*.local
+
+# Logs and package-manager diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Private keys, service accounts, and credential exports
+*.pem
+*.key
+*.p12
+*.pfx
+service-account*.json
+*-service-account.json
+credentials*.json
+google-application-credentials*.json
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Private project notes
 SchedMe_Project_Context.txt
