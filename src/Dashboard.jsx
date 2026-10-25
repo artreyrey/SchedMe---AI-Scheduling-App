@@ -1,22 +1,41 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { applyAiPlanning, createScheduledTask, createTask, deleteTask, replaceScheduledTask, scheduleTask, setTaskCompleted, subscribeToTasks, unscheduleTask, updateScheduledTask } from './services/taskService.js'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { applyAiPlanning, createScheduledTask, createTask, deleteTask, deleteTasks, moveScheduledTasks, moveTaskToPriorityList, replaceScheduledTask, scheduleTask, setTaskColor, setTaskCompleted, setTaskListOrder, setTasksCompleted, setTaskPriority, setTasksPriority, subscribeToTasks, unscheduleTask, updateScheduledTask, updateTaskDetails } from './services/taskService.js'
 import { askPlanningAssistant } from './ai/planningAgent.js'
 import { validatePlanningResponse } from './ai/planValidation.js'
 import { addPromptToAiMemory, AI_MOODS, DEFAULT_AI_MEMORY, forgetAiPreference, saveAiMemory, subscribeToAiMemory } from './services/aiMemoryService.js'
 import { clearConversation, DEFAULT_INTERACTION_PROFILE, EMPTY_SCHEDULING_STATE, learnInteractionStyle, saveConversation, subscribeToConversation } from './services/conversationService.js'
-import { findScheduleConflict, findTaskMatch, formatSlot, formatTimeRange, getMondayWeek, getSchedulingQueue, parseDirectScheduleRequest, parseSchedulingInput, suggestAvailableSlots } from './ai/schedulingIntent.js'
+import { findScheduleConflict, findTaskMatch, formatSlot, formatTimeRange, getMondayWeek, getSchedulingQueue, parseBulkMoveRequest, parseDirectScheduleRequest, parseNamedTaskMoveRequest, parseSchedulingInput, planBulkTaskMoves, planNamedTaskMoves, suggestAvailableSlots } from './ai/schedulingIntent.js'
 import { prepareDailyGreetingHistory, preserveGreetingDate } from './ai/conversationGreeting.js'
 import { confirmsTaskDeletion, declinesTaskDeletion, isCancellationMessage, wantsFullCancellationRemoval, wantsToScheduleAnotherTask } from './ai/cancellationIntent.js'
-import { getDefaultPeriodTimes, getDroppedCalendarSlot, validateCalendarEntry } from './ai/calendarEditor.js'
-import { isTaskCompletionMessage } from './ai/completionIntent.js'
-import { parseTaskCreationIntent } from './ai/taskCreationIntent.js'
+import { getDefaultPeriodTimes, getDroppedCalendarSlot, validateCalendarEntry, validateOptionalScheduleEntry } from './ai/calendarEditor.js'
+import { applyTaskCompletionContext, parseNamedTaskCompletionRequest, parseTaskCompletionRequest } from './ai/completionIntent.js'
+import { parseTaskAttributesIntent, parseTaskCategoryIntent, parseTaskColorChangeIntent, parseTaskCreationIntent } from './ai/taskCreationIntent.js'
+import { parseNamedTaskDeletionRequest, parseNamedTaskPriorityRequest } from './ai/taskActionIntent.js'
+import { getConversationScopeResponse } from './ai/conversationScope.js'
+import { deleteUserVoiceMessages, loadVoiceMessage, saveVoiceMessage } from './services/voiceMessageStore.js'
+import { planTaskListDrop, sortTasksForGroup } from './taskListOrder.js'
 import ThemePicker from './components/ThemePicker.jsx'
 
 const groups = [
   { id: 'free', title: "What's on my mind", subtitle: 'A place to get thoughts out', tone: 'free', icon: '\u25cb', placeholder: 'Write down anything on your mind...' },
   { id: 'urgent', title: 'Urgent', subtitle: 'Needs attention soon', tone: 'urgent', icon: '!', placeholder: 'Add an urgent task...' },
   { id: 'important', title: 'Important', subtitle: 'Moves your priorities forward', tone: 'important', icon: '\u2726', placeholder: 'Add an important task...' },
-  { id: 'notUrgent', title: 'Not urgent', subtitle: 'Flexible timing', tone: 'calm', icon: '\u2197', placeholder: 'Add a flexible task...' },
+  { id: 'notUrgent', title: 'Flexible', subtitle: 'Adjust when needed', tone: 'calm', icon: '\u2197', placeholder: 'Add a flexible task...' },
+]
+
+const taskClassifications = [
+  { id: 'free', label: "What's on my mind", description: 'Classify later', symbol: '○', tone: 'free' },
+  { id: 'urgent', label: 'Urgent', description: 'Needs attention soon', symbol: '!', tone: 'urgent' },
+  { id: 'important', label: 'Important', description: 'Moves priorities forward', symbol: '✦', tone: 'important' },
+  { id: 'notUrgent', label: 'Flexible', description: 'Adjust when needed', symbol: '↗', tone: 'not-urgent' },
+]
+
+const taskListFilters = [
+  { id: 'all', label: 'All', symbol: '◎', tone: 'all' },
+  { id: 'urgent', label: 'Urgent', symbol: '!', tone: 'urgent' },
+  { id: 'important', label: 'Important', symbol: '✦', tone: 'important' },
+  { id: 'notUrgent', label: 'Flexible', symbol: '↗', tone: 'not-urgent' },
+  { id: 'unclassified', label: 'Not classified', symbol: '○', tone: 'free' },
 ]
 
 const schedulePeriods = [
@@ -42,6 +61,24 @@ function pickRandomTaskColor(currentColor = '') {
   return choices[Math.floor(Math.random() * choices.length)]?.value || taskColors[0].value
 }
 
+function getAutomaticTaskColor(category, currentColor = '', reroll = false) {
+  if (category === 'urgent') return '#ef4444'
+  if (category === 'important') return '#22c55e'
+  if (!reroll && /^#[0-9a-f]{6}$/i.test(currentColor)) return currentColor
+  return pickRandomTaskColor(currentColor)
+}
+
+function getTaskDisplayColor(task) {
+  if (task.colorMode === 'manual') return task.color || ''
+  const category = task.urgent ? 'urgent' : task.important ? 'important' : task.category
+  if (category === 'urgent') return '#ef4444'
+  if (category === 'important') return '#22c55e'
+  if (/^#[0-9a-f]{6}$/i.test(task.color || '')) return task.color
+  const seed = `${task.id || ''}:${task.title || ''}`
+  const hash = [...seed].reduce((total, character) => ((total * 31) + character.charCodeAt(0)) | 0, 0)
+  return taskColors[Math.abs(hash) % taskColors.length].value
+}
+
 function localDateKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
@@ -54,7 +91,7 @@ function minuteOfDay(time) {
 
 function stopRepeatedPriorityPrompt(response, tasks, userMessage) {
   const scheduleOnlyRequest = /\b(schedule|put|place|book|add to)\b/i.test(userMessage)
-    && !/\b(urgent|important|priority|categor(?:y|ize)|classify|not urgent)\b/i.test(userMessage)
+    && !/\b(urgent|important|priority|categor(?:y|ize)|classify|not urgent|flexible)\b/i.test(userMessage)
   if (!scheduleOnlyRequest) return response
 
   const settledTaskIds = new Set(tasks.filter((task) => task.category !== 'free').map((task) => task.id))
@@ -67,51 +104,197 @@ function stopRepeatedPriorityPrompt(response, tasks, userMessage) {
   }
 }
 
+function taskCategoryLabel(category, alsoPriority = false) {
+  if (category === 'urgent') return alsoPriority ? 'Urgent and Important' : 'Urgent'
+  if (category === 'important') return 'Important'
+  if (category === 'notUrgent') return 'Flexible'
+  return 'What’s on my mind'
+}
+
+function describeRequestedTaskAttributes(attributes) {
+  const classification = attributes.category ? taskCategoryLabel(attributes.category, attributes.alsoPriority) : ''
+  const color = taskColors.find((option) => option.value === attributes.color)?.label
+  if (classification && color) return `${classification} with ${color.toLocaleLowerCase()} color`
+  return classification || (color ? `${color} color` : '')
+}
+
 function getWeekDays(offset) {
   const today = new Date()
   return getMondayWeek(offset, today).map(({ date, key, label }) => ({
     date,
     key,
+    label,
     day: label.slice(0, 3),
     number: date.getDate(),
     isToday: date.toDateString() === today.toDateString(),
   }))
 }
 
-function TaskPanel({ group, tasks, onAdd, onComplete, saving, error }) {
+function taskScheduleLabel(task) {
+  if (!task.date || !task.startTime || !task.endTime) return 'Date & time · N/A'
+  const date = new Date(`${task.date}T12:00:00`)
+  const day = Number.isNaN(date.getTime()) ? task.date : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
+  return `${day} · ${formatTimeRange(task.startTime, task.endTime)}`
+}
+
+function TaskClassificationSymbols({ task }) {
+  const items = []
+  if (task.urgent) items.push(taskClassifications.find((item) => item.id === 'urgent'))
+  if (task.important) items.push(taskClassifications.find((item) => item.id === 'important'))
+  if (!task.urgent && !task.important && task.category === 'notUrgent') items.push(taskClassifications.find((item) => item.id === 'notUrgent'))
+  if (!items.length) return null
+  return <span className="task-classification-symbols" aria-label={items.map((item) => item.label).join(' and ')}>{items.map((item) => <i className={`task-classification-symbol ${item.tone}`} aria-hidden="true" title={item.label} key={item.id}>{item.symbol}</i>)}</span>
+}
+
+function TaskListFilter({ value, tasks, onChange }) {
+  const [open, setOpen] = useState(false)
+  const filterRef = useRef(null)
+  const selected = taskListFilters.find((option) => option.id === value) || taskListFilters[0]
+  const counts = {
+    all: tasks.length,
+    urgent: tasks.filter((task) => task.urgent).length,
+    important: tasks.filter((task) => task.important).length,
+    notUrgent: tasks.filter((task) => !task.urgent && !task.important && task.category === 'notUrgent').length,
+    unclassified: tasks.filter((task) => !task.urgent && !task.important && !['urgent', 'important', 'notUrgent'].includes(task.category)).length,
+  }
+
+  useEffect(() => {
+    if (!open) return undefined
+    function closeOnOutside(event) {
+      if (!filterRef.current?.contains(event.target)) setOpen(false)
+    }
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return <div className={`task-list-filter ${open ? 'is-open' : ''}`} ref={filterRef}>
+    <button type="button" className="task-list-filter-trigger" aria-expanded={open} aria-haspopup="listbox" onClick={() => setOpen((current) => !current)}>
+      <span className={`task-classification-symbol ${selected.tone}`} aria-hidden="true">{selected.symbol}</span>
+      <span>{selected.label}</span>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
+    </button>
+    {open && <div className="task-list-filter-menu" role="listbox" aria-label="Filter tasks by classification">
+      {taskListFilters.map((option, index) => <button type="button" role="option" aria-selected={option.id === selected.id} className={option.id === selected.id ? 'is-selected' : ''} style={{ '--filter-index': index }} onClick={() => { onChange(option.id); setOpen(false) }} key={option.id}>
+        <span className={`task-classification-symbol ${option.tone}`} aria-hidden="true">{option.symbol}</span><span>{option.label}</span><small>{counts[option.id]}</small>
+      </button>)}
+    </div>}
+  </div>
+}
+
+function TaskPanel({ group, tasks, onAdd, onComplete, onEdit, onTaskDragStart, onTaskDragMove, onTaskDragEnd, onTaskDragOver, onTaskDrop, draggedTaskId, dropTarget, dropTaskId, dropPosition, saving, error }) {
   const [draft, setDraft] = useState('')
-  const [alsoPriority, setAlsoPriority] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [taskFilter, setTaskFilter] = useState('all')
+  const [taskPage, setTaskPage] = useState(0)
+  const filteredTasks = group.id !== 'free' || taskFilter === 'all' ? tasks : tasks.filter((task) => {
+    if (taskFilter === 'urgent') return task.urgent
+    if (taskFilter === 'important') return task.important
+    if (taskFilter === 'notUrgent') return !task.urgent && !task.important && task.category === 'notUrgent'
+    return !task.urgent && !task.important && !['urgent', 'important', 'notUrgent'].includes(task.category)
+  })
+  const previousTaskCountRef = useRef(filteredTasks.length)
+  const pageSize = 7
+  const taskPageCount = Math.max(1, Math.ceil(filteredTasks.length / pageSize))
+  const visibleTasks = filteredTasks.slice(taskPage * pageSize, (taskPage + 1) * pageSize)
+
+  useEffect(() => {
+    setTaskPage((currentPage) => filteredTasks.length > previousTaskCountRef.current ? 0 : Math.min(currentPage, taskPageCount - 1))
+    previousTaskCountRef.current = filteredTasks.length
+  }, [filteredTasks.length, taskPageCount])
+
   async function submit(event) {
     event.preventDefault()
     if (!draft.trim()) return
     const value = draft
     setDraft('')
-    await onAdd(value, group.id, alsoPriority)
-    setAlsoPriority(false)
+    await onAdd(value, group.id, false)
   }
   return (
-    <section id={`${group.id}-tasks`} className={`dashboard-panel dashboard-task-panel ${group.tone}`}>
+    <section
+      id={`${group.id}-tasks`}
+      className={`dashboard-panel dashboard-task-panel ${group.tone} ${draggedTaskId ? 'is-task-drag-active' : ''} ${dropTarget === group.id && !dropTaskId ? 'is-task-drop-target' : ''}`}
+      data-drop-label={`Move to ${group.title}`}
+      onDragOver={(event) => { if (draggedTaskId && !event.target.closest('.dashboard-task-item')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; onTaskDragOver(group.id, '', 'after') } }}
+      onDrop={(event) => { if (!event.target.closest('.dashboard-task-item')) { event.preventDefault(); onTaskDrop(event.dataTransfer.getData('text/plain') || draggedTaskId, group.id, '', 'after') } }}
+    >
       <div className="dashboard-panel-heading">
         <span className={`dashboard-panel-icon ${group.tone}`} aria-hidden="true">{group.icon}</span>
         <div><h2>{group.title}</h2><p>{group.subtitle}</p></div>
-        <span className="dashboard-count">{tasks.length}</span>
+        <span className="dashboard-panel-heading-actions">
+          {group.id === 'free' && <TaskListFilter value={taskFilter} tasks={tasks} onChange={(nextFilter) => { setTaskFilter(nextFilter); setTaskPage(0) }} />}
+          <span className="dashboard-count">{filteredTasks.length}</span>
+        </span>
       </div>
       <form className="task-entry-form" onSubmit={submit}>
         <input aria-label={`New ${group.title} item`} maxLength={240} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={group.placeholder} />
         <button type="submit" disabled={saving || !draft.trim()} aria-label={`Add to ${group.title}`}>+</button>
+        <button type="button" className={`task-edit-toggle ${editing ? 'is-active' : ''}`} onClick={() => setEditing((value) => !value)} aria-label={editing ? `Finish editing ${group.title} tasks` : `Edit ${group.title} tasks`} aria-pressed={editing} title={editing ? 'Finish editing' : 'Edit tasks'}>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 20 4.3-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.3 16Z" /><path d="m14.8 6.5 2.8 2.8" /></svg>
+        </button>
       </form>
-      {(group.id === 'urgent' || group.id === 'important') && <label className="task-overlap-toggle"><input type="checkbox" checked={alsoPriority} onChange={(event) => setAlsoPriority(event.target.checked)} /> Also mark as {group.id === 'urgent' ? 'important' : 'urgent'}</label>}
       {error && <p className="task-storage-error" role="alert">{error}</p>}
       <div className="dashboard-task-list">
-        {tasks.length === 0 && <p className="empty-task-note">Nothing here yet. Add a thought above.</p>}
-        {tasks.map((task) => (
-          <article className={`dashboard-task-item ${task.completed ? 'is-complete' : ''}`} key={task.id}>
-            <button type="button" className="dashboard-task-check" onClick={() => onComplete(task)} aria-label={task.completed ? `Mark ${task.title} incomplete` : `Mark ${task.title} complete`} aria-pressed={Boolean(task.completed)} />
-            <div className="dashboard-task-content"><h4>{task.title}</h4><p>{task.completed ? 'Completed' : task.urgent && task.important ? 'Urgent · Important' : task.urgent ? 'Urgent' : task.important ? 'Important' : task.category === 'notUrgent' ? 'Not urgent' : 'Unscheduled'}</p></div>
+        {filteredTasks.length === 0 && <p className="empty-task-note">{tasks.length ? `No ${taskListFilters.find((option) => option.id === taskFilter)?.label.toLocaleLowerCase()} tasks yet.` : 'Nothing here yet. Add a thought above.'}</p>}
+        <div className={`dashboard-task-list-page ${taskPageCount > 1 ? 'is-paginated' : ''}`} key={`${group.id}-${taskFilter}-${taskPage}`}>
+        {visibleTasks.map((task) => {
+          const displayColor = getTaskDisplayColor(task)
+          return <article
+            className={`dashboard-task-item ${displayColor ? 'has-color' : ''} ${task.completed ? 'is-complete' : ''} ${editing ? 'is-editable' : ''} ${draggedTaskId === task.id ? 'is-dragging' : ''} ${dropTarget === group.id && dropTaskId === task.id && draggedTaskId !== task.id ? `is-drop-${dropPosition}` : ''}`}
+            style={displayColor ? { '--task-color': displayColor } : undefined}
+            key={task.id}
+            draggable={editing && !saving}
+            aria-grabbed={editing ? draggedTaskId === task.id : undefined}
+            onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', task.id); const invisibleDragImage = document.createElement('canvas'); invisibleDragImage.width = 1; invisibleDragImage.height = 1; event.dataTransfer.setDragImage(invisibleDragImage, 0, 0); onTaskDragStart(event, task, group.id, displayColor) }}
+            onDrag={onTaskDragMove}
+            onDragEnd={onTaskDragEnd}
+            onDragOver={(event) => { if (draggedTaskId && draggedTaskId !== task.id) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; const bounds = event.currentTarget.getBoundingClientRect(); onTaskDragOver(group.id, task.id, event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after') } }}
+            onDrop={(event) => { if (draggedTaskId && draggedTaskId !== task.id) { event.preventDefault(); event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); onTaskDrop(event.dataTransfer.getData('text/plain') || draggedTaskId, group.id, task.id, event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after') } }}
+            onClick={editing ? () => onEdit(task) : undefined}
+            onKeyDown={editing ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onEdit(task) } } : undefined}
+            role={editing ? 'button' : undefined}
+            tabIndex={editing ? 0 : undefined}
+          >
+            <button type="button" className="dashboard-task-check" onClick={(event) => { event.stopPropagation(); onComplete(task) }} aria-label={task.completed ? `Mark ${task.title} incomplete` : `Mark ${task.title} complete`} aria-pressed={Boolean(task.completed)} />
+            <div className="dashboard-task-content"><div className="dashboard-task-title-row"><h4>{task.title}</h4><TaskClassificationSymbols task={task} /></div><p>{task.completed ? 'Completed' : task.urgent && task.important ? 'Urgent · Important' : task.urgent ? 'Urgent' : task.important ? 'Important' : task.category === 'notUrgent' ? 'Flexible' : 'What’s on my mind'}</p><small className="dashboard-task-schedule">{taskScheduleLabel(task)}</small></div>
+            {editing && <span className="dashboard-task-edit-cue" aria-hidden="true">Edit</span>}
           </article>
-        ))}
+        })}
+        </div>
+        {taskPageCount > 1 && <nav className="dashboard-task-pagination" aria-label={`${group.title} task pages`}>
+          <button type="button" onClick={() => setTaskPage((page) => Math.max(0, page - 1))} disabled={taskPage === 0} aria-label="Show previous seven tasks" title="Previous seven tasks">←</button>
+          <span><strong>{taskPage * pageSize + 1}–{Math.min((taskPage + 1) * pageSize, filteredTasks.length)}</strong> of {filteredTasks.length}</span>
+          <button type="button" onClick={() => setTaskPage((page) => Math.min(taskPageCount - 1, page + 1))} disabled={taskPage === taskPageCount - 1} aria-label="Show next seven tasks" title="Next seven tasks">→</button>
+        </nav>}
       </div>
     </section>
+  )
+}
+
+function SettingsChoice({ label, value, options, onChange }) {
+  return (
+    <fieldset className="assistant-settings-choice">
+      <legend>{label}</legend>
+      <div style={{ '--settings-choice-count': options.length }}>
+        {options.map((option) => (
+          <button
+            type="button"
+            className={String(value) === String(option.value) ? 'is-selected' : ''}
+            aria-pressed={String(value) === String(option.value)}
+            onClick={() => onChange(option.value)}
+            key={option.value}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
   )
 }
 
@@ -122,35 +305,33 @@ function AssistantSettings({ memory, onClose, onSave, onForget, saving, error })
   const [greetingStyle, setGreetingStyle] = useState(memory.greetingStyle || 'friendly')
   const [editingPreference, setEditingPreference] = useState(null)
   const [preferenceDraft, setPreferenceDraft] = useState('')
+
+  useEffect(() => {
+    function closeOnEscape(event) {
+      if (event.key === 'Escape' && !saving) onClose()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onClose, saving])
+
   return (
-    <div className="assistant-settings-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="assistant-settings-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
       <section className="assistant-settings" role="dialog" aria-modal="true" aria-labelledby="assistant-settings-title">
-        <button type="button" className="auth-close" onClick={onClose} aria-label="Close AI settings">×</button>
-        <p className="dashboard-kicker">Your AI, your way</p>
-        <h2 id="assistant-settings-title">Personalize your assistant</h2>
-        <p className="copy-muted">Its default personality stays thoughtful, warm, and practical. Your choices adjust how it speaks and what it remembers.</p>
+        <button type="button" className="auth-close" onClick={onClose} disabled={saving} aria-label="Close AI settings">×</button>
+        <div className="assistant-settings-heading">
+          <span className="assistant-settings-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5 13.6 9l5.4 1.6-5.4 1.6L12 18l-1.6-5.8L5 10.6 10.4 9 12 3.5Z" /></svg></span>
+          <div><p className="dashboard-kicker">Your AI, your way</p><h2 id="assistant-settings-title">Personalize SchedMe</h2></div>
+        </div>
+        <p className="copy-muted">Choose how your assistant sounds and plans with you.</p>
         <form className="assistant-settings-form" onSubmit={(event) => { event.preventDefault(); onSave({ ...memory, chatbotName: name.trim() || 'SchedMe', mood, defaultDuration: Number(defaultDuration), greetingStyle }) }}>
-          <label htmlFor="assistant-name">Assistant name</label>
-          <input id="assistant-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} placeholder="SchedMe" />
-          <label htmlFor="assistant-mood">Chat mood</label>
-          <select id="assistant-mood" value={mood} onChange={(event) => setMood(event.target.value)}>
-            {AI_MOODS.map((option) => <option value={option} key={option}>{option.charAt(0).toUpperCase() + option.slice(1)}</option>)}
-          </select>
-          <label htmlFor="assistant-duration">Default task duration</label>
-          <select id="assistant-duration" value={defaultDuration} onChange={(event) => setDefaultDuration(event.target.value)}>
-            {[30, 45, 60, 90, 120].map((minutes) => <option value={minutes} key={minutes}>{minutes < 60 ? `${minutes} minutes` : `${minutes / 60} ${minutes === 60 ? 'hour' : 'hours'}`}</option>)}
-          </select>
-          <label htmlFor="assistant-greeting">Opening style</label>
-          <select id="assistant-greeting" value={greetingStyle} onChange={(event) => setGreetingStyle(event.target.value)}>
-            <option value="friendly">Friendly check-in</option>
-            <option value="short">Short greeting</option>
-            <option value="direct">Go directly to planning</option>
-          </select>
-          <button className="auth-submit" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save assistant settings'}</button>
+          <label className="assistant-name-field" htmlFor="assistant-name"><span>Assistant name</span><input id="assistant-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} placeholder="SchedMe" /></label>
+          <SettingsChoice label="Chat mood" value={mood} onChange={setMood} options={AI_MOODS.map((option) => ({ value: option, label: option.charAt(0).toUpperCase() + option.slice(1) }))} />
+          <SettingsChoice label="Default task time" value={defaultDuration} onChange={setDefaultDuration} options={[{ value: 30, label: '30m' }, { value: 45, label: '45m' }, { value: 60, label: '1h' }, { value: 90, label: '1.5h' }, { value: 120, label: '2h' }]} />
+          <SettingsChoice label="Opening style" value={greetingStyle} onChange={setGreetingStyle} options={[{ value: 'friendly', label: 'Friendly' }, { value: 'short', label: 'Brief' }, { value: 'direct', label: 'Go direct' }]} />
+          <div className="assistant-settings-actions"><button type="button" onClick={onClose} disabled={saving}>Cancel</button><button className="auth-submit" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button></div>
         </form>
         <div className="assistant-memory-section">
-          <h3>Saved preferences</h3>
-          <p>In chat, choose <strong>Remember</strong> on a message to save it. Other chat messages aren’t stored as long-term memory.</p>
+          <div className="assistant-memory-heading"><div><h3>Saved preferences</h3><p>Messages you chose to remember.</p></div><span>{memory.preferences.length}</span></div>
           {memory.preferences.length === 0 ? <p className="empty-task-note">No preferences saved yet.</p> : <ul>{memory.preferences.map((preference) => <li key={preference}>{editingPreference === preference ? <div className="assistant-memory-edit"><input maxLength={240} value={preferenceDraft} onChange={(event) => setPreferenceDraft(event.target.value)} aria-label="Edit saved preference" /><div><button type="button" disabled={saving || !preferenceDraft.trim()} onClick={() => { const next = memory.preferences.map((item) => item === preference ? preferenceDraft.trim() : item); onSave({ ...memory, preferences: [...new Set(next)] }) }}>Save</button><button type="button" onClick={() => setEditingPreference(null)}>Cancel</button></div></div> : <><span>{preference}</span><div className="assistant-memory-actions"><button type="button" onClick={() => { setEditingPreference(preference); setPreferenceDraft(preference) }}>Edit</button><button type="button" onClick={() => onForget(preference)}>Remove</button></div></>}</li>)}</ul>}
         </div>
         {error && <p className="task-storage-error" role="alert">{error}</p>}
@@ -212,7 +393,7 @@ function TimePicker({ id, label, value, onChange }) {
   )
 }
 
-function TaskColorPicker({ value, mode, onChange }) {
+function TaskColorPicker({ value, mode, classification, onChange }) {
   const [open, setOpen] = useState(false)
   const pickerRef = useRef(null)
   const closeTimerRef = useRef(null)
@@ -239,7 +420,7 @@ function TaskColorPicker({ value, mode, onChange }) {
 
   function chooseColor(option) {
     const automatic = option.id === 'automatic'
-    onChange({ color: automatic ? pickRandomTaskColor(value) : option.value, mode: automatic ? 'automatic' : 'manual' })
+    onChange({ color: automatic ? getAutomaticTaskColor(classification, value, true) : option.value, mode: automatic ? 'automatic' : 'manual' })
     window.clearTimeout(closeTimerRef.current)
     closeTimerRef.current = window.setTimeout(() => setOpen(false), 260)
   }
@@ -248,11 +429,11 @@ function TaskColorPicker({ value, mode, onChange }) {
     <div className={`calendar-color-picker ${open ? 'is-open' : ''}`} ref={pickerRef}>
       <button type="button" className="calendar-color-trigger" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)}>
         <span className={`calendar-color-current ${mode === 'automatic' ? 'is-automatic' : ''}`} style={{ '--choice-color': value }} aria-hidden="true" />
-        <span className="calendar-color-trigger-copy"><strong>Task color</strong><small>Optional · {mode === 'automatic' ? `Automatic · ${selected?.label || 'Random'}` : selected?.label}</small></span>
+        <span className="calendar-color-trigger-copy"><strong>Task color</strong><small>Optional · {mode === 'automatic' ? `Automatic · ${classification === 'urgent' ? 'Urgent red' : classification === 'important' ? 'Important green' : selected?.label || 'Mixed palette'}` : selected?.label}</small></span>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
       </button>
       {open && <div className="calendar-color-popover" role="dialog" aria-label="Choose a task color">
-        <div className="calendar-color-popover-head"><div><strong>Choose a color</strong><small>Automatic picks a different palette color for you.</small></div><span>{mode === 'automatic' ? `Auto · ${selected?.label || 'Random'}` : selected?.label}</span></div>
+        <div className="calendar-color-popover-head"><div><strong>Choose a color</strong><small>Automatic follows the classification: urgent is red, important is green, and flexible uses the full palette.</small></div><span>{mode === 'automatic' ? `Auto · ${selected?.label || 'Mixed'}` : selected?.label}</span></div>
         <div className="calendar-color-grid">
           {choices.map((option, index) => {
             const automatic = option.id === 'automatic'
@@ -269,46 +450,162 @@ function TaskColorPicker({ value, mode, onChange }) {
   )
 }
 
-function CalendarEditorModal({ editor, onClose, onConfirm, saving, error }) {
+function TaskClassificationPicker({ value, onChange, allowUnclassified = true }) {
+  const [open, setOpen] = useState(false)
+  const pickerRef = useRef(null)
+  const choices = allowUnclassified ? taskClassifications : taskClassifications.filter((item) => item.id !== 'free')
+  const selected = choices.find((item) => item.id === value) || choices[0]
+
+  useEffect(() => {
+    if (!open) return undefined
+    function closeOnOutside(event) {
+      if (!pickerRef.current?.contains(event.target)) setOpen(false)
+    }
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return <div className={`task-classification-picker ${open ? 'is-open' : ''}`} ref={pickerRef}>
+    <button type="button" className="task-classification-trigger" aria-expanded={open} aria-haspopup="listbox" onClick={() => setOpen((current) => !current)}>
+      <span className={`task-classification-symbol ${selected.tone}`} aria-hidden="true">{selected.symbol}</span>
+      <span><strong>Classification</strong><small>{selected.label} · {selected.description}</small></span>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
+    </button>
+    {open && <div className="task-classification-menu" role="listbox" aria-label="Task classification">{choices.map((option, index) => <button type="button" role="option" aria-selected={option.id === selected.id} className={option.id === selected.id ? 'is-selected' : ''} style={{ '--classification-index': index }} onClick={() => { onChange(option.id); setOpen(false) }} key={option.id}>
+      <span className={`task-classification-symbol ${option.tone}`} aria-hidden="true">{option.symbol}</span><span><strong>{option.label}</strong><small>{option.description}</small></span><i aria-hidden="true">✓</i>
+    </button>)}</div>}
+  </div>
+}
+
+function CalendarDatePicker({ value, onChange }) {
+  const selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(value || '') ? new Date(`${value}T12:00:00`) : new Date()
+  const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1))
+  const year = viewMonth.getFullYear()
+  const month = viewMonth.getMonth()
+  const leadingDays = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const todayKey = localDateKey(new Date())
+  const dayCells = [...Array(leadingDays).fill(null), ...Array.from({ length: daysInMonth }, (_, index) => index + 1)]
+  while (dayCells.length % 7) dayCells.push(null)
+
+  function moveMonth(offset) {
+    setViewMonth(new Date(year, month + offset, 1))
+  }
+
+  return <div className="task-date-picker">
+    <div className="task-date-picker-heading">
+      <strong>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(viewMonth)}</strong>
+      <div><button type="button" onClick={() => moveMonth(-1)} aria-label="Previous month">‹</button><button type="button" onClick={() => moveMonth(1)} aria-label="Next month">›</button></div>
+    </div>
+    <div className="task-date-picker-weekdays" aria-hidden="true">{['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => <span key={day}>{day}</span>)}</div>
+    <div className="task-date-picker-grid" role="grid" aria-label="Choose a date">{dayCells.map((day, index) => {
+      if (!day) return <span key={`empty-${index}`} />
+      const key = localDateKey(new Date(year, month, day))
+      const label = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(year, month, day))
+      return <button type="button" className={`${key === value ? 'is-selected' : ''} ${key === todayKey ? 'is-today' : ''}`} aria-label={label} aria-pressed={key === value} onClick={() => onChange(key)} key={key}>{day}</button>
+    })}</div>
+    <button type="button" className="task-date-picker-today" onClick={() => { const today = new Date(); setViewMonth(new Date(today.getFullYear(), today.getMonth(), 1)); onChange(todayKey) }}>Today</button>
+  </div>
+}
+
+function CalendarEditorModal({ editor, onClose, onConfirm, onDelete, saving, error }) {
+  const isInboxTask = editor.origin === 'inbox'
+  const savedClassification = editor.category || (editor.urgent ? 'urgent' : editor.important ? 'important' : isInboxTask ? 'free' : 'notUrgent')
+  const initialClassification = !isInboxTask && savedClassification === 'free' ? 'notUrgent' : savedClassification
+  const initialColorMode = editor.colorMode || (editor.color ? 'manual' : 'automatic')
   const [title, setTitle] = useState(editor.title || '')
   const [startTime, setStartTime] = useState(editor.startTime)
   const [endTime, setEndTime] = useState(editor.endTime)
+  const [date, setDate] = useState(editor.date || '')
+  const [scheduled, setScheduled] = useState(Boolean(editor.date && editor.startTime && editor.endTime))
   const [completed, setCompleted] = useState(Boolean(editor.completed))
-  const [color, setColor] = useState(() => editor.color || pickRandomTaskColor())
-  const [colorMode, setColorMode] = useState(editor.colorMode || (editor.color ? 'manual' : 'automatic'))
+  const [classification, setClassification] = useState(initialClassification)
+  const [colorMode, setColorMode] = useState(initialColorMode)
+  const [color, setColor] = useState(() => initialColorMode === 'automatic' ? getAutomaticTaskColor(initialClassification, editor.color || '') : editor.color || pickRandomTaskColor())
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [scheduleEditorOpen, setScheduleEditorOpen] = useState(false)
+  const [scheduleDraft, setScheduleDraft] = useState({ date: '', startTime: '09:00', endTime: '10:00' })
+  const [scheduleError, setScheduleError] = useState('')
+
+  function openScheduleEditor() {
+    setScheduleDraft({ date: date || localDateKey(new Date()), startTime: startTime || '09:00', endTime: endTime || '10:00' })
+    setScheduleError('')
+    setScheduleEditorOpen(true)
+  }
+
+  function applySchedule() {
+    const validationError = validateOptionalScheduleEntry({ title: title || 'Task', scheduled: true, ...scheduleDraft })
+    if (validationError) {
+      setScheduleError(validationError)
+      return
+    }
+    setDate(scheduleDraft.date)
+    setStartTime(scheduleDraft.startTime)
+    setEndTime(scheduleDraft.endTime)
+    setScheduled(true)
+    setScheduleEditorOpen(false)
+    setScheduleError('')
+  }
+
+  function changeClassification(nextClassification) {
+    setClassification(nextClassification)
+    if (colorMode === 'automatic') setColor(getAutomaticTaskColor(nextClassification, color, true))
+  }
+
+  function cancelDeleteOrClose() {
+    if (scheduleEditorOpen) setScheduleEditorOpen(false)
+    else if (confirmingDelete) setConfirmingDelete(false)
+    else onClose()
+  }
 
   useEffect(() => {
     function closeOnEscape(event) {
-      if (event.key === 'Escape' && !saving) onClose()
+      if (event.key !== 'Escape' || saving) return
+      if (scheduleEditorOpen) setScheduleEditorOpen(false)
+      else if (confirmingDelete) setConfirmingDelete(false)
+      else onClose()
     }
     document.addEventListener('keydown', closeOnEscape)
     return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [onClose, saving])
+  }, [confirmingDelete, onClose, saving, scheduleEditorOpen])
 
   return (
-    <div className="calendar-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
+    <div className="calendar-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) cancelDeleteOrClose() }}>
       <section className="calendar-editor-modal" role="dialog" aria-modal="true" aria-labelledby="calendar-editor-title">
-        <button type="button" className="auth-close" onClick={onClose} disabled={saving} aria-label="Close calendar editor">×</button>
+        <button type="button" className="auth-close" onClick={cancelDeleteOrClose} disabled={saving} aria-label={confirmingDelete ? 'Cancel task deletion' : 'Close calendar editor'}>×</button>
         <span className="calendar-editor-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none"><path d="m4 20 4.3-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.3 16Z" /><path d="m14.8 6.5 2.8 2.8" /></svg>
         </span>
-        <p className="dashboard-kicker">{editor.mode === 'create' ? 'Add to calendar' : 'Edit calendar task'}</p>
-        <h2 id="calendar-editor-title">{editor.mode === 'create' ? 'Create a time block' : 'Update this time block'}</h2>
-        <p className="calendar-editor-date">{editor.dayLabel}<span>{editor.periodLabel}</span></p>
-        <form className="calendar-editor-form" onSubmit={(event) => { event.preventDefault(); onConfirm({ title, startTime, endTime, completed, color, colorMode }) }}>
+        <p className="dashboard-kicker">{editor.mode === 'create' ? 'Add to calendar' : isInboxTask ? 'Edit task' : 'Edit calendar task'}</p>
+        <div className="calendar-editor-title-row">
+          <h2 id="calendar-editor-title">{editor.mode === 'create' ? 'Create a time block' : isInboxTask ? 'Update this task' : 'Update this time block'}</h2>
+          {editor.mode === 'edit' && <button type="button" className="calendar-delete-icon-button" onClick={() => setConfirmingDelete(true)} disabled={saving} aria-label="Delete task" title="Delete task">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
+          </button>}
+        </div>
+        <p className="calendar-editor-date">{scheduled && date ? new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(`${date}T12:00:00`)) : 'Date & time'}<span>{scheduled ? formatTimeRange(startTime, endTime) : 'N/A'}</span></p>
+        <form className="calendar-editor-form" onSubmit={(event) => { event.preventDefault(); onConfirm({ title, date, startTime, endTime, scheduled, completed, color, colorMode, category: classification }) }}>
           <label htmlFor="calendar-task-title">Task</label>
           <input id="calendar-task-title" autoFocus maxLength={240} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What are you planning?" />
-          <TaskColorPicker value={color} mode={colorMode} onChange={({ color: nextColor, mode: nextMode }) => { setColor(nextColor); setColorMode(nextMode) }} />
-          <div className="calendar-time-fields">
-            <div className="calendar-time-control"><label htmlFor="calendar-start-time">Time start</label><TimePicker id="calendar-start-time" label="Start time" value={startTime} onChange={setStartTime} /></div>
-            <span aria-hidden="true">→</span>
-            <div className="calendar-time-control"><label htmlFor="calendar-end-time">End</label><TimePicker id="calendar-end-time" label="End time" value={endTime} onChange={setEndTime} /></div>
-          </div>
+          <TaskClassificationPicker value={classification} onChange={changeClassification} allowUnclassified={isInboxTask} />
+          <TaskColorPicker value={color} mode={colorMode} classification={classification} onChange={({ color: nextColor, mode: nextMode }) => { setColor(nextColor); setColorMode(nextMode) }} />
+          <section className={`calendar-optional-schedule ${scheduled ? 'is-scheduled' : ''}`}>
+            <span className="calendar-optional-schedule-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4v3M19 4v3M4 9h16M5 6h14a1 1 0 0 1 1 1v12H4V7a1 1 0 0 1 1-1Z" /></svg></span>
+            <div><strong>Schedule</strong><span>{scheduled ? `${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(`${date}T12:00:00`))} · ${formatTimeRange(startTime, endTime)}` : 'N/A · Schedule it whenever you’re ready.'}</span></div>
+            <button type="button" onClick={openScheduleEditor} aria-haspopup="dialog">{scheduled ? 'Edit schedule' : 'Add date & time'}</button>
+          </section>
           {editor.mode === 'edit' && <fieldset className="calendar-completion-choice">
             <legend>Mark as done?</legend>
             <button type="button" className={completed ? 'is-selected' : ''} aria-pressed={completed} onClick={() => setCompleted(true)}>Yes</button>
             <button type="button" className={!completed ? 'is-selected' : ''} aria-pressed={!completed} onClick={() => setCompleted(false)}>No</button>
-            <small>{completed ? 'The title will appear crossed out.' : 'The task will stay active on your calendar.'}</small>
+            <small>{completed ? 'The title will appear crossed out.' : isInboxTask ? 'The task will stay active.' : 'The task will stay active on your calendar.'}</small>
           </fieldset>}
           {error && <p className="calendar-editor-error" role="alert">{error}</p>}
           <div className="calendar-editor-actions">
@@ -317,6 +614,32 @@ function CalendarEditorModal({ editor, onClose, onConfirm, saving, error }) {
           </div>
         </form>
       </section>
+      {scheduleEditorOpen && <div className="task-schedule-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setScheduleEditorOpen(false) }}>
+        <section className="task-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="task-schedule-dialog-title">
+          <div className="task-schedule-dialog-heading"><span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4v3M19 4v3M4 9h16M5 6h14a1 1 0 0 1 1 1v12H4V7a1 1 0 0 1 1-1Z" /></svg></span><div><p className="dashboard-kicker">Plan your task</p><h3 id="task-schedule-dialog-title">Choose a date and time</h3></div><button type="button" onClick={() => setScheduleEditorOpen(false)} aria-label="Close schedule popup">×</button></div>
+          <CalendarDatePicker value={scheduleDraft.date} onChange={(nextDate) => setScheduleDraft((draft) => ({ ...draft, date: nextDate }))} />
+          <div className="calendar-time-fields task-schedule-dialog-times">
+            <div className="calendar-time-control"><label htmlFor="task-popup-start-time">Time start</label><TimePicker id="task-popup-start-time" label="Start time" value={scheduleDraft.startTime} onChange={(nextTime) => setScheduleDraft((draft) => ({ ...draft, startTime: nextTime }))} /></div>
+            <span aria-hidden="true">→</span>
+            <div className="calendar-time-control"><label htmlFor="task-popup-end-time">End</label><TimePicker id="task-popup-end-time" label="End time" value={scheduleDraft.endTime} onChange={(nextTime) => setScheduleDraft((draft) => ({ ...draft, endTime: nextTime }))} /></div>
+          </div>
+          {scheduleError && <p className="calendar-editor-error" role="alert">{scheduleError}</p>}
+          {isInboxTask && scheduled && <button type="button" className="task-schedule-later-button" onClick={() => { setScheduled(false); setScheduleEditorOpen(false); setScheduleError('') }}>Remove date and schedule later</button>}
+          <div className="task-schedule-dialog-actions"><button type="button" onClick={() => setScheduleEditorOpen(false)}>Cancel</button><button type="button" className="is-primary" onClick={applySchedule}>Apply schedule</button></div>
+        </section>
+      </div>}
+      {confirmingDelete && <div className="calendar-delete-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setConfirmingDelete(false) }}>
+        <section className="calendar-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="calendar-delete-dialog-title" aria-describedby="calendar-delete-dialog-description">
+          <span className="calendar-delete-dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg></span>
+          <h3 id="calendar-delete-dialog-title">Delete this task?</h3>
+          <p id="calendar-delete-dialog-description">“{editor.title}” will be permanently removed from your task lists and calendar.</p>
+          {error && <p className="calendar-editor-error" role="alert">{error}</p>}
+          <div className="calendar-delete-confirmation-actions">
+            <button type="button" className="calendar-cancel-button" onClick={() => setConfirmingDelete(false)} disabled={saving} autoFocus>Cancel</button>
+            <button type="button" className="calendar-delete-confirm-button" onClick={onDelete} disabled={saving}>{saving ? 'Deleting…' : 'Delete task'}</button>
+          </div>
+        </section>
+      </div>}
     </div>
   )
 }
@@ -328,8 +651,8 @@ function PlanReview({ plan, tasks, onApply, busy, applied, error }) {
   return (
     <div className="ai-plan-review">
       <strong>{proposal.length ? 'Proposed weekly plan' : 'Proposed task categories'}</strong>
-      {proposal.length > 0 && <ul>{proposal.map((item) => <li key={item.taskId}><span>{taskNames.get(item.taskId) || 'Task'} · {item.urgent && item.important ? 'Urgent + important' : item.urgent ? 'Urgent' : item.important ? 'Important' : 'Not urgent'}</span><small>{item.date} · {item.startTime}–{item.endTime}</small></li>)}</ul>}
-      {updates.length > 0 && <ul>{updates.map((item) => <li key={item.taskId}><span>{taskNames.get(item.taskId) || 'Task'} · {item.urgent && item.important ? 'Urgent + important' : item.urgent ? 'Urgent' : item.important ? 'Important' : 'Not urgent'}</span><small>Category</small></li>)}</ul>}
+      {proposal.length > 0 && <ul>{proposal.map((item) => <li key={item.taskId}><span>{taskNames.get(item.taskId) || 'Task'} · {item.urgent && item.important ? 'Urgent + important' : item.urgent ? 'Urgent' : item.important ? 'Important' : 'Flexible'}</span><small>{item.date} · {item.startTime}–{item.endTime}</small></li>)}</ul>}
+      {updates.length > 0 && <ul>{updates.map((item) => <li key={item.taskId}><span>{taskNames.get(item.taskId) || 'Task'} · {item.urgent && item.important ? 'Urgent + important' : item.urgent ? 'Urgent' : item.important ? 'Important' : 'Flexible'}</span><small>Category</small></li>)}</ul>}
       {error && <p className="task-storage-error" role="alert">{error}</p>}
       <button type="button" onClick={onApply} disabled={busy || applied}>{applied ? proposal.length ? 'Added to your week' : 'Categories saved' : busy ? 'Saving…' : proposal.length ? 'Approve and add to my week' : 'Apply these categories'}</button>
     </div>
@@ -400,6 +723,312 @@ function isChooseAnotherTime(text) {
   return /\b(another time|different time|keep the existing|keep thesis|don.?t move|do not move)\b/i.test(text)
 }
 
+const voiceWaveBars = [8, 13, 18, 10, 22, 15, 25, 12, 19, 27, 16, 23, 11, 18, 14, 25, 20, 9, 16, 12, 22, 15, 8]
+
+function formatVoiceDuration(value) {
+  const total = Math.max(0, Math.round(Number(value) || 0))
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+function MicrophoneIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6" /></svg>
+}
+
+function VoiceWaveform({ active = false, progress = 0 }) {
+  return <span className={`voice-waveform ${active ? 'is-active' : ''}`} aria-hidden="true">{voiceWaveBars.map((height, index) => <i className={(index + 1) / voiceWaveBars.length <= progress ? 'is-played' : ''} key={index} style={{ '--voice-bar': `${height}px`, '--voice-delay': `${index * -34}ms` }} />)}</span>
+}
+
+function VoiceMessage({ duration, src = '', transcript = '', onRemove = null }) {
+  const [playing, setPlaying] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
+  const audioRef = useRef(null)
+
+  async function togglePlayback() {
+    if (!src || !audioRef.current) return
+    if (playing) audioRef.current.pause()
+    else {
+      if (audioRef.current.ended) {
+        audioRef.current.currentTime = 0
+        setProgress(0)
+      }
+      try { await audioRef.current.play() } catch { return }
+    }
+    setPlaying(!playing)
+  }
+
+  function changePlaybackRate() {
+    const nextRate = playbackRate === 1 ? 1.5 : playbackRate === 1.5 ? 2 : 1
+    setPlaybackRate(nextRate)
+    if (audioRef.current) audioRef.current.playbackRate = nextRate
+  }
+
+  return <div className={`voice-message ${transcript ? 'has-transcript' : ''}`}>
+    <div className="voice-message-player">
+      <button type="button" className="voice-play-button" onClick={togglePlayback} disabled={!src} aria-label={src ? (playing ? 'Pause voice message' : 'Play voice message') : 'Voice playback is unavailable on this device'}>{playing ? 'Ⅱ' : '▶'}</button>
+      <VoiceWaveform active={playing} progress={progress} />
+      <span className="voice-message-meta"><time>{formatVoiceDuration(duration)}</time><button type="button" className="voice-speed-button" onClick={changePlaybackRate} disabled={!src} aria-label={`Playback speed ${playbackRate} times`}>{playbackRate}×</button></span>
+      {onRemove && <button type="button" className="voice-remove-button" onClick={onRemove} aria-label="Discard voice recording">×</button>}
+    </div>
+    {transcript && <><button type="button" className="voice-transcript-toggle" aria-expanded={transcriptOpen} onClick={() => setTranscriptOpen((open) => !open)}>{transcriptOpen ? 'Hide transcription' : 'View transcription'}</button>{transcriptOpen && <p className="voice-transcript-text">{transcript}</p>}</>}
+    {src && <audio ref={audioRef} src={src} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={(event) => setProgress(event.currentTarget.duration ? event.currentTarget.currentTime / event.currentTarget.duration : 0)} />}
+  </div>
+}
+
+function MicrophonePermissionModal({ blocked, onCancel, onContinue }) {
+  useEffect(() => {
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onCancel])
+
+  return <div className="microphone-permission-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
+    <section className="microphone-permission-modal" role="dialog" aria-modal="true" aria-labelledby="microphone-permission-title">
+      <span className="microphone-permission-icon"><MicrophoneIcon /></span>
+      <div><p className="dashboard-kicker">Voice message</p><h2 id="microphone-permission-title">{blocked ? 'Microphone is blocked' : 'Use your microphone?'}</h2></div>
+      <p>{blocked
+        ? 'Your browser has already blocked microphone access. Open the lock icon beside the website address, set Microphone to Allow, then try again.'
+        : 'SchedMe needs microphone access to record your voice message. Your browser will show the final permission request next.'}</p>
+      {!blocked && <small>The recording stays in this browser. Transcription uses the browser’s built-in speech recognition with no paid API.</small>}
+      <div className="microphone-permission-actions"><button type="button" onClick={onCancel}>{blocked ? 'Close' : 'Cancel'}</button>{!blocked && <button type="button" className="is-primary" onClick={onContinue}>Continue</button>}</div>
+    </section>
+  </div>
+}
+
+function FloatingAssistant({
+  assistantName,
+  assistantMood,
+  userName,
+  messages,
+  tasks,
+  chatInput,
+  setChatInput,
+  onSend,
+  chatBusy,
+  conversationReady,
+  chatError,
+  onApplyPlan,
+  planBusy,
+  planError,
+  getVoiceUrl,
+}) {
+  const [open, setOpen] = useState(false)
+  const [popupMounted, setPopupMounted] = useState(false)
+  const [dragPoint, setDragPoint] = useState(null)
+  const [settling, setSettling] = useState(false)
+  const [settleTilt, setSettleTilt] = useState(0)
+  const [position, setPosition] = useState(() => {
+    if (typeof window === 'undefined') return { x: 728, y: 150 }
+    try {
+      const saved = JSON.parse(window.localStorage.getItem('schedme-chathead-position') || '{}')
+      const fallbackX = saved.side === 'left' ? 16 : Math.max(8, window.innerWidth - 72)
+      return {
+        x: Number.isFinite(saved.x) ? Math.max(8, Math.min(window.innerWidth - 64, saved.x)) : fallbackX,
+        y: Number.isFinite(saved.y) ? Math.max(8, Math.min(window.innerHeight - 64, saved.y)) : Math.min(150, window.innerHeight - 76),
+      }
+    } catch {
+      return { x: Math.max(8, window.innerWidth - 72), y: Math.min(150, window.innerHeight - 76) }
+    }
+  })
+  const [viewport, setViewport] = useState(() => typeof window === 'undefined' ? { width: 800, height: 800 } : { width: window.innerWidth, height: window.innerHeight })
+  const [lastSeenModelCount, setLastSeenModelCount] = useState(() => messages.filter((message) => message.role === 'model').length)
+  const rootRef = useRef(null)
+  const transcriptRef = useRef(null)
+  const dragRef = useRef(null)
+  const suppressClickRef = useRef(false)
+  const modelMessageCount = messages.filter((message) => message.role === 'model').length
+  const hasUnreadReply = !open && modelMessageCount > lastSeenModelCount
+  const headX = dragPoint?.x ?? position.x
+  const headY = dragPoint?.y ?? position.y
+  const popupHeight = Math.min(520, viewport.height - 24)
+  const popupWidth = Math.max(200, Math.min(368, viewport.width - 24))
+  const popupSide = headX + 28 >= viewport.width / 2 ? 'right' : 'left'
+  const desiredPopupLeft = popupSide === 'right' ? headX - popupWidth - 12 : headX + 68
+  const popupLeft = Math.max(12, Math.min(viewport.width - popupWidth - 12, desiredPopupLeft))
+  const popupTop = Math.max(12, Math.min(viewport.height - popupHeight - 12, headY - 180))
+
+  useEffect(() => {
+    function handleResize() {
+      const width = window.innerWidth
+      const height = window.innerHeight
+      setViewport({ width, height })
+      setPosition((current) => ({
+        x: Math.max(8, Math.min(width - 64, current.x)),
+        y: Math.max(8, Math.min(height - 64, current.y)),
+      }))
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    try { window.localStorage.setItem('schedme-chathead-position', JSON.stringify(position)) } catch { /* Position persistence is optional. */ }
+  }, [position])
+
+  useEffect(() => {
+    if (open) {
+      setPopupMounted(true)
+      return undefined
+    }
+    if (!popupMounted) return undefined
+    const closeTimer = window.setTimeout(() => setPopupMounted(false), 220)
+    return () => window.clearTimeout(closeTimer)
+  }, [open, popupMounted])
+
+  useEffect(() => {
+    if (!settling) return undefined
+    const settleTimer = window.setTimeout(() => setSettling(false), 440)
+    return () => window.clearTimeout(settleTimer)
+  }, [settling])
+
+  useLayoutEffect(() => {
+    if (!open || !popupMounted) return undefined
+    let secondFrame = 0
+    const scrollToLatest = () => {
+      const transcript = transcriptRef.current
+      if (transcript) transcript.scrollTop = transcript.scrollHeight
+    }
+    scrollToLatest()
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollToLatest()
+      secondFrame = window.requestAnimationFrame(scrollToLatest)
+    })
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      if (secondFrame) window.cancelAnimationFrame(secondFrame)
+    }
+  }, [open, popupMounted, messages.length, chatBusy])
+
+  useEffect(() => {
+    if (!open) return undefined
+    setLastSeenModelCount(modelMessageCount)
+    function closeOutside(event) {
+      if (!rootRef.current?.contains(event.target)) setOpen(false)
+    }
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open, modelMessageCount])
+
+  function beginDrag(event) {
+    if (event.button !== 0) return
+    setSettling(false)
+    const bounds = event.currentTarget.getBoundingClientRect()
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - bounds.left,
+      offsetY: event.clientY - bounds.top,
+      lastX: event.clientX,
+      tilt: 0,
+      moved: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function moveDrag(event) {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return
+    drag.moved = true
+    setOpen(false)
+    const tilt = Math.max(-11, Math.min(11, (event.clientX - drag.lastX) * 0.85))
+    drag.lastX = event.clientX
+    drag.tilt = tilt
+    setDragPoint({
+      x: Math.max(8, Math.min(window.innerWidth - 64, event.clientX - drag.offsetX)),
+      y: Math.max(8, Math.min(window.innerHeight - 64, event.clientY - drag.offsetY)),
+      tilt,
+    })
+  }
+
+  function finishDrag(event) {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    if (drag.moved) {
+      const nextX = Math.max(8, Math.min(window.innerWidth - 64, event.clientX - drag.offsetX))
+      const nextY = Math.max(8, Math.min(window.innerHeight - 64, event.clientY - drag.offsetY))
+      setPosition({ x: nextX, y: nextY })
+      setSettleTilt(drag.tilt)
+      setSettling(true)
+      suppressClickRef.current = true
+    }
+    setDragPoint(null)
+    dragRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  function toggleChat() {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
+    setOpen((current) => {
+      const next = !current
+      if (next) setLastSeenModelCount(modelMessageCount)
+      return next
+    })
+  }
+
+  const headStyle = {
+    left: headX,
+    top: headY,
+    '--schedme-chathead-tilt': `${dragPoint?.tilt ?? settleTilt}deg`,
+  }
+  const popupStyle = { top: popupTop, left: popupLeft, width: popupWidth, height: popupHeight }
+
+  return <div className={`schedme-chathead-layer is-${popupSide} ${open ? 'is-open' : 'is-closed'}`} ref={rootRef}>
+    {popupMounted && <section className={`schedme-chat-popup ${open ? 'is-opening' : 'is-closing'}`} style={popupStyle} role="dialog" aria-modal="false" aria-label={`Chat with ${assistantName}`}>
+      <header className="schedme-chat-popup-header">
+        <span className="schedme-chat-popup-avatar" aria-hidden="true">{assistantName.charAt(0).toUpperCase()}</span>
+        <div><strong>{assistantName}</strong><small>{assistantMood} planning companion</small></div>
+        <button type="button" onClick={() => setOpen(false)} aria-label="Close SchedMe chat">×</button>
+      </header>
+      <div className="schedme-chat-popup-transcript ai-chat-transcript" ref={transcriptRef} aria-live="polite">
+        {messages.map((message, index) => <div className={`ai-chat-message ${message.role}`} key={`floating-${index}-${message.role}`}>
+          <span className="ai-message-avatar" aria-hidden="true">{message.role === 'model' ? assistantName.charAt(0).toUpperCase() : (userName || 'Y').charAt(0).toUpperCase()}</span>
+          <div className="ai-chat-bubble">
+            {message.kind === 'voice' ? <VoiceMessage duration={message.voiceDurationSeconds} src={getVoiceUrl(message.voiceId)} transcript={message.text} /> : <p>{message.text}</p>}
+            {message.role === 'model' && message.plan && <PlanReview plan={message.plan} tasks={tasks} onApply={() => onApplyPlan(message.plan, index)} busy={planBusy} applied={message.planApplied} error={planError} />}
+          </div>
+        </div>)}
+        {chatBusy && <p className="ai-thinking">Thinking…</p>}
+      </div>
+      <form className="schedme-chat-popup-composer" onSubmit={onSend}>
+        <input aria-label={`Message ${assistantName}`} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask SchedMe to move or plan tasks…" maxLength={2000} />
+        <button type="submit" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button>
+      </form>
+      {chatError && <p className="schedme-chat-popup-error" role="alert">{chatError}</p>}
+    </section>}
+    <button
+      type="button"
+      className={`schedme-chathead ${dragPoint ? 'is-dragging' : ''} ${settling ? 'is-settling' : ''} ${hasUnreadReply ? 'has-unread' : ''}`}
+      style={headStyle}
+      aria-expanded={open}
+      aria-label={open ? `Close ${assistantName} chat` : `Open ${assistantName} chat. Hold and drag to move`}
+      title="Tap to chat · Hold and drag to move"
+      onPointerDown={beginDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
+      onClick={toggleChat}
+    >
+      <span aria-hidden="true">{open ? '×' : assistantName.charAt(0).toUpperCase()}</span>
+      {hasUnreadReply && <i aria-label="New assistant reply" />}
+    </button>
+  </div>
+}
+
 function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   const [weekOffset, setWeekOffset] = useState(0)
   const [calendarEditMode, setCalendarEditMode] = useState(false)
@@ -416,10 +1045,21 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   const [tasks, setTasks] = useState([])
   const [taskError, setTaskError] = useState('')
   const [taskBusy, setTaskBusy] = useState(false)
+  const [taskListDrag, setTaskListDrag] = useState({ taskId: '', sourceGroup: '', targetGroup: '', targetTaskId: '', position: 'after', x: 0, y: 0, title: '', label: '', color: '' })
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
   const [chatError, setChatError] = useState('')
+  const [voiceSupported, setVoiceSupported] = useState(false)
+  const [voiceTranscriptionSupported, setVoiceTranscriptionSupported] = useState(false)
+  const [voiceStarting, setVoiceStarting] = useState(false)
+  const [microphonePermissionPrompt, setMicrophonePermissionPrompt] = useState(null)
+  const [voiceRecording, setVoiceRecording] = useState(false)
+  const [voiceDuration, setVoiceDuration] = useState(0)
+  const [voiceDraft, setVoiceDraft] = useState(null)
+  const [voiceError, setVoiceError] = useState('')
+  const [voiceTranscriptStatus, setVoiceTranscriptStatus] = useState('')
+  const [, setVoiceAudioVersion] = useState(0)
   const [aiMemory, setAiMemory] = useState(DEFAULT_AI_MEMORY)
   const [aiMemoryError, setAiMemoryError] = useState('')
   const [aiMemoryBusy, setAiMemoryBusy] = useState(false)
@@ -436,6 +1076,18 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   const calendarNoticeTimerRef = useRef(null)
   const suppressCalendarClickRef = useRef(false)
   const greetedDateRef = useRef('')
+  const voiceRecognitionRef = useRef(null)
+  const voiceRecorderRef = useRef(null)
+  const voiceStreamRef = useRef(null)
+  const voiceTimerRef = useRef(null)
+  const voicePermissionTimerRef = useRef(null)
+  const voiceRecognitionRestartTimerRef = useRef(null)
+  const voiceStartedAtRef = useRef(0)
+  const voiceRecordingRef = useRef(false)
+  const voiceBaseTextRef = useRef('')
+  const voiceFinalTextRef = useRef('')
+  const voiceChunksRef = useRef([])
+  const voiceAudioUrlsRef = useRef(new Map())
   const weekDays = useMemo(() => getWeekDays(weekOffset), [weekOffset])
   const planningDates = useMemo(() => weekDays.map((day) => day.key), [weekDays])
   const formattedToday = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())
@@ -461,6 +1113,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     const visibleMessages = nextMessages.length ? nextMessages : [{ role: 'model', text: 'Ready when you are. Choose a task to schedule, or type Task / Day / Time.' }]
     const nextState = savedState.lastGreetingDate === today ? savedState : { ...savedState, lastGreetingDate: today }
     setMessages(visibleMessages)
+    restoreSavedVoiceMessages(visibleMessages)
     setSchedulingState(nextState)
     setInteractionProfile(savedProfile)
     setConversationReady(true)
@@ -471,8 +1124,15 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   }), [user.uid, aiMemory.chatbotName, aiMemory.greetingStyle])
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    const transcript = chatEndRef.current?.parentElement
+    transcript?.scrollTo({ top: transcript.scrollHeight, behavior: 'smooth' })
   }, [messages, chatBusy])
+
+  useEffect(() => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    setVoiceSupported(Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia))
+    setVoiceTranscriptionSupported(Boolean(Recognition))
+  }, [])
 
   useEffect(() => {
     if (!menuOpen) return undefined
@@ -502,6 +1162,13 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   useEffect(() => () => {
     window.clearTimeout(menuTimerRef.current)
     window.clearTimeout(calendarNoticeTimerRef.current)
+    window.clearInterval(voiceTimerRef.current)
+    window.clearTimeout(voicePermissionTimerRef.current)
+    window.clearTimeout(voiceRecognitionRestartTimerRef.current)
+    voiceRecognitionRef.current?.abort()
+    if (voiceRecorderRef.current?.state === 'recording') voiceRecorderRef.current.stop()
+    voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
+    voiceAudioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
   }, [])
 
   useEffect(() => {
@@ -556,10 +1223,10 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   }
 
   const tasksByGroup = useMemo(() => ({
-    free: tasks.filter((task) => task.category === 'free'),
-    urgent: tasks.filter((task) => task.urgent),
-    important: tasks.filter((task) => task.important),
-    notUrgent: tasks.filter((task) => !task.urgent && !task.important && task.category !== 'free'),
+    free: sortTasksForGroup(tasks.filter((task) => task.category === 'free' || task.showInInbox === true || task.source === 'manual-calendar'), 'free'),
+    urgent: sortTasksForGroup(tasks.filter((task) => task.urgent), 'urgent'),
+    important: sortTasksForGroup(tasks.filter((task) => task.important), 'important'),
+    notUrgent: sortTasksForGroup(tasks.filter((task) => !task.urgent && !task.important && task.category !== 'free'), 'notUrgent'),
   }), [tasks])
 
   async function addTask(title, category, alsoPriority) {
@@ -574,6 +1241,67 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setTaskError('')
     try { await setTaskCompleted(user.uid, task.id, !task.completed) }
     catch { setTaskError('Could not update this task. Check your Firestore setup.') }
+  }
+
+  function startTaskListDrag(event, task, sourceGroup, color) {
+    const x = Math.max(12, Math.min(event.clientX + 18, window.innerWidth - 280))
+    const y = Math.max(12, Math.min(event.clientY + 18, window.innerHeight - 104))
+    setTaskListDrag({
+      taskId: task.id,
+      sourceGroup,
+      targetGroup: sourceGroup,
+      targetTaskId: '',
+      position: 'after',
+      x,
+      y,
+      title: task.title,
+      label: task.completed ? 'Completed' : taskCategoryLabel(task.category),
+      color,
+    })
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) navigator.vibrate(14)
+  }
+
+  function moveTaskListDragPreview(event) {
+    if (!event.clientX && !event.clientY) return
+    const x = Math.max(12, Math.min(event.clientX + 18, window.innerWidth - 280))
+    const y = Math.max(12, Math.min(event.clientY + 18, window.innerHeight - 104))
+    setTaskListDrag((current) => current.taskId ? { ...current, x, y } : current)
+  }
+
+  function updateTaskListDropTarget(targetGroup, targetTaskId = '', position = 'after') {
+    setTaskListDrag((current) => current.taskId && (current.targetGroup !== targetGroup || current.targetTaskId !== targetTaskId || current.position !== position)
+      ? { ...current, targetGroup, targetTaskId, position }
+      : current)
+  }
+
+  function finishTaskListDrag() {
+    setTaskListDrag({ taskId: '', sourceGroup: '', targetGroup: '', targetTaskId: '', position: 'after', x: 0, y: 0, title: '', label: '', color: '' })
+  }
+
+  async function moveTaskToList(taskId, targetGroup, targetTaskId = '', position = 'after') {
+    if (!taskId || !targetGroup || taskId === targetTaskId) {
+      finishTaskListDrag()
+      return
+    }
+    const destinationTasks = tasksByGroup[targetGroup] || []
+    const orderedTaskIds = planTaskListDrop(destinationTasks, taskId, targetTaskId, position)
+    const currentOrder = destinationTasks.map((task) => task.id)
+    const orderChanged = orderedTaskIds.some((id, index) => id !== currentOrder[index]) || orderedTaskIds.length !== currentOrder.length
+    if (targetGroup === taskListDrag.sourceGroup && !orderChanged) {
+      finishTaskListDrag()
+      return
+    }
+    setTaskBusy(true)
+    setTaskError('')
+    try {
+      if (targetGroup === taskListDrag.sourceGroup) await setTaskListOrder(user.uid, targetGroup, orderedTaskIds)
+      else await moveTaskToPriorityList(user.uid, taskId, targetGroup, orderedTaskIds)
+    } catch (error) {
+      setTaskError(error.code === 'permission-denied' ? 'Task access is blocked. Check the published Firestore rules.' : error.message || 'Could not move or reorder this task.')
+    } finally {
+      setTaskBusy(false)
+      finishTaskListDrag()
+    }
   }
 
   async function saveAssistantSettings(memory) {
@@ -609,8 +1337,251 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     finally { setAiMemoryBusy(false) }
   }
 
+  async function restoreSavedVoiceMessages(savedMessages) {
+    const voiceMessages = savedMessages.filter((message) => message.kind === 'voice' && message.voiceId && !voiceAudioUrlsRef.current.has(message.voiceId))
+    if (!voiceMessages.length) return
+    let restored = false
+    await Promise.all(voiceMessages.map(async (message) => {
+      try {
+        const blob = await loadVoiceMessage(user.uid, message.voiceId)
+        if (!blob || voiceAudioUrlsRef.current.has(message.voiceId)) return
+        voiceAudioUrlsRef.current.set(message.voiceId, URL.createObjectURL(blob))
+        restored = true
+      } catch { /* Voice recordings are optional local-only data. */ }
+    }))
+    if (restored) setVoiceAudioVersion((version) => version + 1)
+  }
+
+  function discardVoiceDraft() {
+    if (voiceDraft?.url) URL.revokeObjectURL(voiceDraft.url)
+    setVoiceDraft(null)
+    setVoiceDuration(0)
+    setVoiceError('')
+    setVoiceTranscriptStatus('')
+  }
+
+  function stopVoiceRecording() {
+    if (!voiceRecordingRef.current) return
+    voiceRecordingRef.current = false
+    setVoiceRecording(false)
+    window.clearInterval(voiceTimerRef.current)
+    window.clearTimeout(voiceRecognitionRestartTimerRef.current)
+    const elapsed = Math.max(1, Math.round((Date.now() - voiceStartedAtRef.current) / 1000))
+    setVoiceDuration(elapsed)
+
+    const recognition = voiceRecognitionRef.current
+    voiceRecognitionRef.current = null
+    try { recognition?.stop() } catch { /* Recognition may already have ended. */ }
+
+    const recorder = voiceRecorderRef.current
+    if (recorder?.state === 'recording') recorder.stop()
+    else {
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
+      voiceStreamRef.current = null
+    }
+  }
+
+  async function requestVoiceRecording() {
+    if (chatBusy || voiceStarting || !conversationReady) return
+    if (!voiceSupported) {
+      await startVoiceRecording()
+      return
+    }
+
+    let permissionState = 'prompt'
+    try {
+      const permission = await navigator.permissions?.query?.({ name: 'microphone' })
+      if (permission?.state) permissionState = permission.state
+    } catch { /* Some browsers only expose permission through getUserMedia. */ }
+
+    if (permissionState === 'granted') {
+      await startVoiceRecording()
+      return
+    }
+    setVoiceError('')
+    setMicrophonePermissionPrompt(permissionState === 'denied' ? 'blocked' : 'prompt')
+  }
+
+  async function startVoiceRecording() {
+    if (!voiceSupported || chatBusy || !conversationReady) {
+      if (!voiceSupported) setVoiceError(window.isSecureContext
+        ? 'Microphone recording is not available in this browser. Open the site in Chrome, Edge, or Safari.'
+        : 'Microphone access requires the secure production site. Open https://schedme.vercel.app in a new browser tab.')
+      return
+    }
+
+    discardVoiceDraft()
+    setVoiceStarting(true)
+    setVoiceError('Waiting for microphone permission…')
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+
+    try {
+      try {
+        const permission = await navigator.permissions?.query?.({ name: 'microphone' })
+        if (permission?.state === 'denied') {
+          const deniedError = new Error('Microphone permission is blocked.')
+          deniedError.name = 'NotAllowedError'
+          throw deniedError
+        }
+      } catch (permissionError) {
+        if (permissionError?.name === 'NotAllowedError') throw permissionError
+      }
+
+      let permissionTimedOut = false
+      const permissionRequest = navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+        if (permissionTimedOut) {
+          stream.getTracks().forEach((track) => track.stop())
+          const timeoutError = new Error('Microphone permission timed out.')
+          timeoutError.name = 'PermissionTimeoutError'
+          throw timeoutError
+        }
+        return stream
+      })
+      const permissionTimeout = new Promise((_, reject) => {
+        voicePermissionTimerRef.current = window.setTimeout(() => {
+          permissionTimedOut = true
+          const timeoutError = new Error('Microphone permission timed out.')
+          timeoutError.name = 'PermissionTimeoutError'
+          reject(timeoutError)
+        }, 15000)
+      })
+      const stream = await Promise.race([permissionRequest, permissionTimeout])
+      window.clearTimeout(voicePermissionTimerRef.current)
+      const recorder = new MediaRecorder(stream)
+      let recognition = Recognition ? new Recognition() : null
+      voiceStreamRef.current = stream
+      voiceRecorderRef.current = recorder
+      voiceRecognitionRef.current = recognition
+      voiceChunksRef.current = []
+      voiceBaseTextRef.current = chatInput.trim()
+      voiceFinalTextRef.current = ''
+      voiceStartedAtRef.current = Date.now()
+      voiceRecordingRef.current = true
+      setVoiceTranscriptStatus(recognition ? 'Starting live transcription…' : 'Live transcription is unavailable in this browser.')
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) voiceChunksRef.current.push(event.data)
+      }
+      recorder.onstop = () => {
+        const seconds = Math.max(1, Math.round((Date.now() - voiceStartedAtRef.current) / 1000))
+        const blob = new Blob(voiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        if (blob.size) setVoiceDraft({ blob, url: URL.createObjectURL(blob), duration: seconds })
+        setVoiceDuration(seconds)
+        stream.getTracks().forEach((track) => track.stop())
+        voiceStreamRef.current = null
+        voiceRecorderRef.current = null
+      }
+
+      if (recognition) {
+        recognition.lang = navigator.language || 'en-US'
+        // Short recognition sessions restart after each phrase. This is more
+        // reliable across Chromium-based and mobile browsers than continuous mode.
+        recognition.continuous = false
+        recognition.interimResults = true
+        recognition.maxAlternatives = 1
+        recognition.onstart = () => {
+          setVoiceTranscriptStatus('Listening… speak now.')
+          setVoiceError('')
+        }
+        recognition.onspeechstart = () => setVoiceTranscriptStatus('Hearing you…')
+        recognition.onresult = (event) => {
+          let interim = ''
+          for (let index = event.resultIndex; index < event.results.length; index += 1) {
+            const transcript = event.results[index][0]?.transcript || ''
+            if (event.results[index].isFinal) voiceFinalTextRef.current += `${transcript.trim()} `
+            else interim += transcript
+          }
+          const spoken = `${voiceFinalTextRef.current}${interim}`.trim()
+          setVoiceTranscriptStatus(spoken ? 'Transcribing live…' : 'Listening… speak now.')
+          setChatInput([voiceBaseTextRef.current, spoken].filter(Boolean).join(' ').slice(0, 2000))
+        }
+        recognition.onerror = (event) => {
+          if (event.error === 'aborted') return
+          if (event.error === 'no-speech') {
+            setVoiceTranscriptStatus('Listening… speak when ready.')
+            return
+          }
+
+          const blocked = event.error === 'not-allowed' || event.error === 'service-not-allowed'
+          const unavailable = blocked || event.error === 'audio-capture' || event.error === 'language-not-supported'
+          setVoiceError(blocked
+            ? 'Live transcription was blocked by this browser. Your audio is still recording; allow speech recognition or use Chrome or Edge.'
+            : event.error === 'network'
+              ? 'Live transcription lost its connection. I’ll keep trying while the audio records.'
+              : 'Live transcription paused. I’ll keep trying while the audio records.')
+          setVoiceTranscriptStatus(unavailable ? 'Live transcription unavailable—audio is still recording.' : 'Reconnecting live transcription…')
+          if (unavailable) {
+            recognition.onend = null
+            if (voiceRecognitionRef.current === recognition) voiceRecognitionRef.current = null
+          }
+        }
+        recognition.onend = () => {
+          if (!voiceRecordingRef.current) return
+          setVoiceTranscriptStatus((status) => status.startsWith('Live transcription unavailable') ? status : 'Listening for your next words…')
+          window.clearTimeout(voiceRecognitionRestartTimerRef.current)
+          voiceRecognitionRestartTimerRef.current = window.setTimeout(() => {
+            if (!voiceRecordingRef.current || voiceRecognitionRef.current !== recognition) return
+            try { recognition.start() } catch {
+              setVoiceTranscriptStatus('Reconnecting live transcription…')
+            }
+          }, 180)
+        }
+      }
+
+      recorder.start(250)
+      if (recognition) {
+        try { recognition.start() } catch {
+          voiceRecognitionRef.current = null
+          recognition = null
+          setVoiceTranscriptStatus('Live transcription could not start—audio is still recording.')
+        }
+      }
+      setVoiceRecording(true)
+      setVoiceStarting(false)
+      setVoiceDuration(0)
+      setVoiceError(recognition ? '' : 'Recording is working, but this browser has no free built-in transcription. Type what you said before sending, or use Chrome, Edge, or Safari.')
+      voiceTimerRef.current = window.setInterval(() => {
+        const seconds = Math.floor((Date.now() - voiceStartedAtRef.current) / 1000)
+        setVoiceDuration(seconds)
+        if (seconds >= 300) stopVoiceRecording()
+      }, 250)
+    } catch (error) {
+      voiceRecordingRef.current = false
+      setVoiceRecording(false)
+      setVoiceStarting(false)
+      window.clearInterval(voiceTimerRef.current)
+      window.clearTimeout(voicePermissionTimerRef.current)
+      window.clearTimeout(voiceRecognitionRestartTimerRef.current)
+      try { voiceRecognitionRef.current?.abort() } catch { /* Recognition may not have started. */ }
+      const failedRecorder = voiceRecorderRef.current
+      if (failedRecorder?.state === 'recording') {
+        failedRecorder.onstop = null
+        failedRecorder.stop()
+      }
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
+      voiceRecognitionRef.current = null
+      voiceRecorderRef.current = null
+      voiceStreamRef.current = null
+      setVoiceError(error?.name === 'NotAllowedError'
+        ? 'Microphone access is blocked. Select the lock or microphone icon in the address bar, set Microphone to Allow, then try again.'
+        : error?.name === 'PermissionTimeoutError'
+          ? 'The browser permission prompt did not finish. Check the address bar for a microphone icon, choose Allow, then click the mic again. If this is an IDE preview, open schedme.vercel.app in a new tab.'
+          : error?.name === 'NotFoundError'
+            ? 'No microphone was found on this device.'
+            : error?.name === 'NotReadableError'
+              ? 'The microphone is being used by another app. Close that app and try again.'
+              : 'The microphone could not start. Try again or type your message.')
+    }
+  }
+
   async function resetConversation() {
     if (!window.confirm('Clear this saved conversation? Your tasks and assistant preferences will stay unchanged.')) return
+    if (voiceRecordingRef.current) stopVoiceRecording()
+    setMicrophonePermissionPrompt(null)
+    discardVoiceDraft()
+    voiceAudioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+    voiceAudioUrlsRef.current.clear()
+    deleteUserVoiceMessages(user.uid).catch(() => {})
     const today = localDateKey(new Date())
     const freshMessages = [{ role: 'model', text: 'Chat cleared. Choose a task to schedule whenever you’re ready.' }]
     await clearConversation(user.uid, today)
@@ -631,13 +1602,25 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   async function sendChat(event, directMessage = '') {
     event?.preventDefault()
     const text = (directMessage || chatInput).trim()
-    if (!text || chatBusy || !conversationReady) return
+    if (!text || chatBusy || voiceRecording || !conversationReady) return
 
     const preliminary = parseSchedulingInput(text, tasks, weekDays, schedulingState.activeTaskId, aiMemory.defaultDuration || 60)
     const nextProfile = learnInteractionStyle(interactionProfile, text, preliminary.isCompact)
-    const next = [...messages, { role: 'user', text }]
+    let voiceMessage = null
+    if (!directMessage && voiceDraft) {
+      const voiceId = globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}`
+      voiceAudioUrlsRef.current.set(voiceId, voiceDraft.url)
+      saveVoiceMessage(user.uid, voiceId, voiceDraft.blob).catch(() => {})
+      voiceMessage = { kind: 'voice', voiceId, voiceDurationSeconds: voiceDraft.duration }
+    }
+    const next = [...messages, { role: 'user', text, ...(voiceMessage || {}) }]
     setMessages(next)
     setChatInput('')
+    if (voiceMessage) {
+      setVoiceDraft(null)
+      setVoiceDuration(0)
+      setVoiceError('')
+    }
     setChatBusy(true)
     setChatError('')
 
@@ -685,6 +1668,54 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
 
     try {
       const creationRequest = parseTaskCreationIntent(text)
+      const directSchedule = parseDirectScheduleRequest(text, tasks, weekDays, aiMemory.defaultDuration || 60)
+      const bulkMoveRequest = parseBulkMoveRequest(text)
+      const namedTaskMoveRequest = parseNamedTaskMoveRequest(text, tasks, weekDays)
+      const previousUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+      const previousCompletionRequest = parseTaskCompletionRequest(previousUserMessage?.text, weekDays)
+      let completionRequest = parseTaskCompletionRequest(text, weekDays)
+      completionRequest = applyTaskCompletionContext(completionRequest, text, previousCompletionRequest, schedulingState.lastAction)
+      const namedCompletionRequest = parseNamedTaskCompletionRequest(text, tasks)
+      const namedDeletionRequest = parseNamedTaskDeletionRequest(text, tasks)
+      const namedPriorityRequest = parseNamedTaskPriorityRequest(text, tasks)
+      const requestedAttributes = parseTaskAttributesIntent(text)
+      const requestedAttributeDescription = describeRequestedTaskAttributes(requestedAttributes)
+
+      if (namedDeletionRequest.isDeletion) {
+        if (namedDeletionRequest.unmatchedNames.length || namedDeletionRequest.ambiguousNames.length) {
+          const missing = namedDeletionRequest.unmatchedNames.map((name) => `I couldn't find a task matching "${name}."`)
+          const ambiguous = namedDeletionRequest.ambiguousNames.map(({ name, matches }) => `"${name}" could mean ${matches.slice(0, 4).map((task) => `"${task.title}"`).join(' or ')}.`)
+          await complete(`I didn't delete anything. ${[...missing, ...ambiguous].join(' ')} Please clarify the task ${namedDeletionRequest.unmatchedNames.length + namedDeletionRequest.ambiguousNames.length === 1 ? 'name' : 'names'}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        if (!namedDeletionRequest.tasks.length) {
+          await complete("I couldn't find those tasks, so I didn't delete anything.", { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        await deleteTasks(user.uid, namedDeletionRequest.tasks.map((task) => task.id))
+        const taskNames = namedDeletionRequest.tasks.map((task) => `"${task.title}"`).join(' and ')
+        await complete(`Done! I deleted ${taskNames} from your tasks.`, { ...EMPTY_SCHEDULING_STATE })
+        return
+      }
+
+      if (namedPriorityRequest.isPriorityChange && namedPriorityRequest.isMultiple) {
+        if (namedPriorityRequest.unmatchedNames.length || namedPriorityRequest.ambiguousNames.length) {
+          const missing = namedPriorityRequest.unmatchedNames.map((name) => `I couldn't find a task matching "${name}."`)
+          const ambiguous = namedPriorityRequest.ambiguousNames.map(({ name, matches }) => `"${name}" could mean ${matches.slice(0, 4).map((task) => `"${task.title}"`).join(' or ')}.`)
+          await complete(`I didn't change anything. ${[...missing, ...ambiguous].join(' ')} Please clarify the task ${namedPriorityRequest.unmatchedNames.length + namedPriorityRequest.ambiguousNames.length === 1 ? 'name' : 'names'}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        if (!namedPriorityRequest.tasks.length) {
+          await complete("I couldn't find those tasks, so I didn't change anything.", { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        await setTasksPriority(user.uid, namedPriorityRequest.tasks.map((task) => task.id), namedPriorityRequest.category, namedPriorityRequest.alsoPriority)
+        const taskNames = namedPriorityRequest.tasks.map((task) => `"${task.title}"`).join(' and ')
+        const destination = taskCategoryLabel(namedPriorityRequest.category, namedPriorityRequest.alsoPriority)
+        await complete(`Done! I moved ${taskNames} to your ${destination} task list.`, { ...EMPTY_SCHEDULING_STATE })
+        return
+      }
+
       if (creationRequest.isCreation) {
         if (!creationRequest.title) {
           await complete('What should I call the new task?', { ...EMPTY_SCHEDULING_STATE })
@@ -692,6 +1723,23 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         }
 
         const hasCompleteSlot = preliminary.day && !preliminary.day.ambiguous && preliminary.time
+        const requestedCategory = requestedAttributes.category || creationRequest.category
+        const requestedAlsoPriority = requestedAttributes.category ? requestedAttributes.alsoPriority : creationRequest.alsoPriority
+        const existingTask = requestedCategory ? findTaskMatch(creationRequest.title, tasks).task : null
+        if (existingTask) {
+          await setTaskPriority(user.uid, existingTask.id, requestedCategory, requestedAlsoPriority)
+          if (requestedAttributes.color) {
+            await setTaskColor(user.uid, existingTask.id, requestedAttributes.color, requestedAttributes.colorMode)
+          }
+          if (hasCompleteSlot) {
+            await saveSlot(existingTask, { date: preliminary.day.key, startTime: preliminary.time.startTime, endTime: preliminary.time.endTime }, { ...EMPTY_SCHEDULING_STATE, activeTaskId: existingTask.id })
+            return
+          }
+          const destination = taskCategoryLabel(requestedCategory, requestedAlsoPriority)
+          await complete(`Done—“${existingTask.title}” is now in your ${destination} task list. Tell me when you’re ready to schedule it.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
         if (hasCompleteSlot) {
           const slot = { date: preliminary.day.key, startTime: preliminary.time.startTime, endTime: preliminary.time.endTime }
           const conflict = findScheduleConflict(tasks, '__new-task__', slot)
@@ -702,29 +1750,233 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
             await createScheduledTask(user.uid, {
               title: creationRequest.title,
               ...slot,
-              color: pickRandomTaskColor(),
-              colorMode: 'automatic',
+              category: requestedCategory,
+              alsoPriority: requestedAlsoPriority,
+              color: requestedAttributes.color || getAutomaticTaskColor(requestedCategory || 'notUrgent'),
+              colorMode: requestedAttributes.colorMode || 'automatic',
             })
-            await complete(`Done—“${creationRequest.title}” was created and scheduled ${formatSlot(slot, weekDays)}.`, { ...EMPTY_SCHEDULING_STATE })
+            await complete(`Done—“${creationRequest.title}” was created${requestedAttributeDescription ? ` as ${requestedAttributeDescription}` : ''} and scheduled ${formatSlot(slot, weekDays)}.`, { ...EMPTY_SCHEDULING_STATE })
             return
           }
 
-          await createTask(user.uid, creationRequest.title, 'free')
+          await createTask(user.uid, creationRequest.title, requestedCategory || 'free', requestedAlsoPriority, requestedAttributes.color, requestedAttributes.colorMode)
+          const destination = taskCategoryLabel(requestedCategory, requestedAlsoPriority)
           await complete(
             conflict
-              ? `I’ve put “${creationRequest.title}” in What’s on my mind because that time overlaps with “${conflict.title}.” Tell me another day and time when you’re ready.`
-              : `I’ve put “${creationRequest.title}” in What’s on my mind because that time has already passed. Tell me another day and time when you’re ready.`,
+              ? `I’ve put “${creationRequest.title}” in ${destination} because that time overlaps with “${conflict.title}.” Tell me another day and time when you’re ready.`
+              : `I’ve put “${creationRequest.title}” in ${destination} because that time has already passed. Tell me another day and time when you’re ready.`,
             { ...EMPTY_SCHEDULING_STATE },
           )
           return
         }
 
-        await createTask(user.uid, creationRequest.title, 'free')
-        await complete(`I’ve put “${creationRequest.title}” in your What’s on my mind task list. Tell me when you’re ready to schedule it or any other task.`, { ...EMPTY_SCHEDULING_STATE })
+        await createTask(user.uid, creationRequest.title, requestedCategory || 'free', requestedAlsoPriority, requestedAttributes.color, requestedAttributes.colorMode)
+        const destination = taskCategoryLabel(requestedCategory, requestedAlsoPriority)
+        await complete(`I’ve put “${creationRequest.title}” in your ${destination} task list. Tell me when you’re ready to schedule it or any other task.`, { ...EMPTY_SCHEDULING_STATE })
         return
       }
 
-      if (isTaskCompletionMessage(text)) {
+      if (bulkMoveRequest.isBulk) {
+        if (bulkMoveRequest.invalidClauses.length || bulkMoveRequest.moves.length === 0) {
+          await complete('I understood that you want to move multiple tasks, but I could not read every source and destination date. Try “Move all tasks from Saturday to Sunday.”', { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        const bulkPlan = planBulkTaskMoves(tasks, bulkMoveRequest.moves)
+        if (bulkPlan.conflicts.length) {
+          const conflict = bulkPlan.conflicts[0]
+          const slot = { date: conflict.date, startTime: conflict.left.startTime, endTime: conflict.left.endTime }
+          await complete(
+            `I did not move anything because “${conflict.left.title}” would overlap with “${conflict.right.title}” ${formatSlot(slot, weekDays)}. Move one of those tasks first, or give me a different destination day.`,
+            { ...EMPTY_SCHEDULING_STATE },
+          )
+          return
+        }
+
+        if (!bulkPlan.updates.length) {
+          const sourceDays = bulkPlan.counts.map((item) => item.sourceLabel).join(' or ')
+          await complete(`There are no scheduled tasks to move on ${sourceDays}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        await moveScheduledTasks(user.uid, bulkPlan.updates.map((item) => ({ taskId: item.taskId, date: item.date })))
+        const movedDescriptions = bulkPlan.counts
+          .filter((item) => item.count > 0)
+          .map((item) => `${item.count} ${item.count === 1 ? 'task' : 'tasks'} from ${item.sourceLabel} to ${item.destinationLabel}`)
+        const emptySources = bulkPlan.counts.filter((item) => item.count === 0).map((item) => item.sourceLabel)
+        const emptyNote = emptySources.length ? ` There were no scheduled tasks on ${emptySources.join(' or ')}.` : ''
+        await complete(
+          `Done—I moved ${movedDescriptions.join(', and ')}.${emptyNote} You can say “undo” to move them back.`,
+          {
+            ...EMPTY_SCHEDULING_STATE,
+            lastAction: {
+              type: 'bulk-move',
+              moves: bulkPlan.updates.map((item) => ({ taskId: item.taskId, previousDate: item.previousDate, date: item.date })),
+            },
+          },
+        )
+        return
+      }
+
+      if (namedTaskMoveRequest.isMultiple) {
+        if (namedTaskMoveRequest.destination?.ambiguous) {
+          await complete(`Did you mean ${namedTaskMoveRequest.destination.ambiguous.join(' or ')}?`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        if (namedTaskMoveRequest.unmatchedNames.length || namedTaskMoveRequest.ambiguousNames.length) {
+          const missing = namedTaskMoveRequest.unmatchedNames.map((name) => `I couldn’t find a scheduled task matching “${name}.”`)
+          const ambiguous = namedTaskMoveRequest.ambiguousNames.map(({ name, matches }) => `“${name}” could mean ${matches.slice(0, 4).map((task) => `“${task.title}”`).join(' or ')}.`)
+          await complete(`I didn’t move anything. ${[...missing, ...ambiguous].join(' ')} Please clarify the task ${namedTaskMoveRequest.unmatchedNames.length + namedTaskMoveRequest.ambiguousNames.length === 1 ? 'name' : 'names'}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        const namedMovePlan = planNamedTaskMoves(tasks, namedTaskMoveRequest.tasks, namedTaskMoveRequest.destination.key)
+        if (namedMovePlan.conflicts.length) {
+          const conflict = namedMovePlan.conflicts[0]
+          const slot = { date: conflict.date, startTime: conflict.left.startTime, endTime: conflict.left.endTime }
+          await complete(
+            `I didn’t move anything because “${conflict.left.title}” would overlap with “${conflict.right.title}” ${formatSlot(slot, weekDays)}. Choose another day or move one of those tasks first.`,
+            { ...EMPTY_SCHEDULING_STATE },
+          )
+          return
+        }
+
+        if (!namedMovePlan.updates.length) {
+          await complete(`Those tasks are already scheduled on ${namedTaskMoveRequest.destination.label}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        await moveScheduledTasks(user.uid, namedMovePlan.updates.map((item) => ({ taskId: item.taskId, date: item.date })))
+        const movedTaskIds = new Set(namedMovePlan.updates.map((item) => item.taskId))
+        const movedNames = namedTaskMoveRequest.tasks.filter((task) => movedTaskIds.has(task.id)).map((task) => `“${task.title}”`)
+        const alreadyThere = namedTaskMoveRequest.tasks.filter((task) => !movedTaskIds.has(task.id)).map((task) => `“${task.title}”`)
+        const alreadyThereNote = alreadyThere.length ? ` ${alreadyThere.join(' and ')} ${alreadyThere.length === 1 ? 'was' : 'were'} already there.` : ''
+        await complete(
+          `Done—I moved ${movedNames.join(' and ')} to ${namedTaskMoveRequest.destination.label} and kept ${movedNames.length === 1 ? 'its' : 'their'} original ${movedNames.length === 1 ? 'time' : 'times'}.${alreadyThereNote} You can say “undo” to move ${movedNames.length === 1 ? 'it' : 'them'} back.`,
+          {
+            ...EMPTY_SCHEDULING_STATE,
+            lastAction: {
+              type: 'bulk-move',
+              moves: namedMovePlan.updates.map((item) => ({ taskId: item.taskId, previousDate: item.previousDate, date: item.date })),
+            },
+          },
+        )
+        return
+      }
+
+      const colorChangeRequest = parseTaskColorChangeIntent(text)
+      if (colorChangeRequest.isColorChange) {
+        const contextualTask = schedulingState.activeTaskId
+          ? tasks.find((task) => task.id === schedulingState.activeTaskId)
+          : schedulingState.lastAction?.taskId
+            ? tasks.find((task) => task.id === schedulingState.lastAction.taskId)
+            : null
+        const match = colorChangeRequest.title
+          ? findTaskMatch(colorChangeRequest.title, tasks, { includeCompleted: true })
+          : { task: contextualTask, matches: [] }
+        if (!match.task) {
+          const choices = match.matches.slice(0, 3).map((task) => `“${task.title}”`).join(', ')
+          await complete(choices ? `Which task do you mean: ${choices}?` : 'Which task would you like to recolor?', schedulingState)
+          return
+        }
+        await setTaskColor(user.uid, match.task.id, colorChangeRequest.color, colorChangeRequest.colorMode)
+        await complete(`Done—“${match.task.title}” is now ${colorChangeRequest.colorName}.`, { ...EMPTY_SCHEDULING_STATE })
+        return
+      }
+
+      const categoryRequest = parseTaskCategoryIntent(text)
+      if (categoryRequest.isCategoryChange && !directSchedule.isDirect) {
+        const match = findTaskMatch(categoryRequest.title, tasks, { includeCompleted: true })
+        if (!match.task) {
+          const choices = match.matches.slice(0, 3).map((task) => `“${task.title}”`).join(', ')
+          await complete(choices ? `Which task do you mean: ${choices}?` : `I couldn’t find “${categoryRequest.title}” in your tasks.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        await setTaskPriority(user.uid, match.task.id, categoryRequest.category, categoryRequest.alsoPriority)
+        const destination = taskCategoryLabel(categoryRequest.category, categoryRequest.alsoPriority)
+        await complete(`Done—“${match.task.title}” is now in your ${destination} task list.`, { ...EMPTY_SCHEDULING_STATE })
+        return
+      }
+
+      if (completionRequest.isBulk) {
+        const contextualTaskIds = new Set(Array.isArray(completionRequest.targetTaskIds) ? completionRequest.targetTaskIds : [])
+        const targetTasks = contextualTaskIds.size
+          ? tasks.filter((task) => contextualTaskIds.has(task.id))
+          : completionRequest.day
+            ? tasks.filter((task) => task.date === completionRequest.day.key)
+            : tasks
+        const targetLabel = completionRequest.day?.label || completionRequest.targetLabel || ''
+        const targetScope = targetLabel ? ` on ${targetLabel}` : contextualTaskIds.size ? ' from the last change' : ''
+        if (!targetTasks.length) {
+          await complete(targetLabel
+            ? `There are no tasks scheduled on ${targetLabel}.`
+            : contextualTaskIds.size ? 'Those tasks are no longer available.' : 'There are no tasks to update.', { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        const tasksToUpdate = targetTasks.filter((task) => Boolean(task.completed) !== completionRequest.completed)
+        if (!tasksToUpdate.length) {
+          await complete(completionRequest.completed
+            ? `All ${targetTasks.length} ${targetTasks.length === 1 ? 'task' : 'tasks'}${targetScope} ${targetTasks.length === 1 ? 'is' : 'are'} already done.`
+            : `All ${targetTasks.length} ${targetTasks.length === 1 ? 'task' : 'tasks'}${targetScope} ${targetTasks.length === 1 ? 'is' : 'are'} already active.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+
+        await setTasksCompleted(user.uid, tasksToUpdate.map((task) => task.id), completionRequest.completed)
+        const unchangedCount = targetTasks.length - tasksToUpdate.length
+        const unchangedNote = unchangedCount
+          ? ` ${unchangedCount} ${unchangedCount === 1 ? 'was' : 'were'} already ${completionRequest.completed ? 'done' : 'active'}.`
+          : ''
+        await complete(
+          completionRequest.completed
+            ? `Done—I marked ${tasksToUpdate.length} ${tasksToUpdate.length === 1 ? 'task' : 'tasks'}${targetScope} as done.${unchangedNote}`
+            : `Done—I reopened ${tasksToUpdate.length} ${tasksToUpdate.length === 1 ? 'task' : 'tasks'}${targetScope}.${unchangedNote}`,
+          {
+            ...EMPTY_SCHEDULING_STATE,
+            lastAction: {
+              type: 'bulk-completion',
+              taskIds: tasksToUpdate.map((task) => task.id),
+              targetTaskIds: targetTasks.map((task) => task.id),
+              targetLabel,
+              previousCompleted: !completionRequest.completed,
+            },
+          },
+        )
+        return
+      }
+
+      if (namedCompletionRequest.isMultiple) {
+        if (namedCompletionRequest.unmatchedNames.length || namedCompletionRequest.ambiguousNames.length) {
+          const missing = namedCompletionRequest.unmatchedNames.map((name) => `I couldn’t find a task matching “${name}.”`)
+          const ambiguous = namedCompletionRequest.ambiguousNames.map(({ name, matches }) => `“${name}” could mean ${matches.slice(0, 4).map((task) => `“${task.title}”`).join(' or ')}.`)
+          await complete(`I didn’t change anything. ${[...missing, ...ambiguous].join(' ')} Please clarify the task ${namedCompletionRequest.unmatchedNames.length + namedCompletionRequest.ambiguousNames.length === 1 ? 'name' : 'names'}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        const tasksToUpdate = namedCompletionRequest.tasks.filter((task) => Boolean(task.completed) !== namedCompletionRequest.completed)
+        if (!tasksToUpdate.length) {
+          await complete(`Those tasks are already ${namedCompletionRequest.completed ? 'done' : 'active'}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        await setTasksCompleted(user.uid, tasksToUpdate.map((task) => task.id), namedCompletionRequest.completed)
+        const taskNames = tasksToUpdate.map((task) => `“${task.title}”`).join(' and ')
+        await complete(
+          namedCompletionRequest.completed ? `Done—I marked ${taskNames} as done.` : `Done—I reopened ${taskNames}.`,
+          {
+            ...EMPTY_SCHEDULING_STATE,
+            lastAction: {
+              type: 'bulk-completion',
+              taskIds: tasksToUpdate.map((task) => task.id),
+              targetTaskIds: namedCompletionRequest.tasks.map((task) => task.id),
+              targetLabel: '',
+              previousCompleted: !namedCompletionRequest.completed,
+            },
+          },
+        )
+        return
+      }
+
+      if (completionRequest.isCompletion) {
         const match = findTaskMatch(text, tasks, { includeCompleted: true })
         const contextualTask = schedulingState.activeTaskId
           ? tasks.find((task) => task.id === schedulingState.activeTaskId)
@@ -737,16 +1989,17 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
           await complete(choices ? `Which task is done: ${choices}?` : 'Which task should I mark as done?', schedulingState)
           return
         }
-        if (completedTask.completed) {
-          await complete(`“${completedTask.title}” is already done.`, { ...EMPTY_SCHEDULING_STATE })
+        if (Boolean(completedTask.completed) === completionRequest.completed) {
+          await complete(`“${completedTask.title}” is already ${completionRequest.completed ? 'done' : 'active'}.`, { ...EMPTY_SCHEDULING_STATE })
           return
         }
-        await setTaskCompleted(user.uid, completedTask.id, true)
-        await complete(`Already done—“${completedTask.title}” is marked complete.`, { ...EMPTY_SCHEDULING_STATE })
+        await setTaskCompleted(user.uid, completedTask.id, completionRequest.completed)
+        await complete(completionRequest.completed
+          ? `Done—“${completedTask.title}” is marked complete.`
+          : `Done—“${completedTask.title}” is active again.`, { ...EMPTY_SCHEDULING_STATE })
         return
       }
 
-      const directSchedule = parseDirectScheduleRequest(text, tasks, weekDays, aiMemory.defaultDuration || 60)
       if (directSchedule.isDirect) {
         if (directSchedule.day?.ambiguous) {
           await complete(
@@ -765,6 +2018,12 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         }
 
         if (directSchedule.task) {
+          if (requestedAttributes.category) {
+            await setTaskPriority(user.uid, directSchedule.task.id, requestedAttributes.category, requestedAttributes.alsoPriority)
+          }
+          if (requestedAttributes.color) {
+            await setTaskColor(user.uid, directSchedule.task.id, requestedAttributes.color, requestedAttributes.colorMode)
+          }
           const directState = {
             ...EMPTY_SCHEDULING_STATE,
             activeTaskId: directSchedule.task.id,
@@ -785,7 +2044,14 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         }
 
         if (!directSchedule.isComplete) {
-          const createdTask = await createTask(user.uid, directSchedule.title, 'free')
+          const createdTask = await createTask(
+            user.uid,
+            directSchedule.title,
+            requestedAttributes.category || 'free',
+            requestedAttributes.alsoPriority,
+            requestedAttributes.color,
+            requestedAttributes.colorMode,
+          )
           const waitingState = {
             ...EMPTY_SCHEDULING_STATE,
             activeTaskId: createdTask.id,
@@ -808,7 +2074,14 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         const currentMinute = now.getHours() * 60 + now.getMinutes()
         const isPast = slot.date === localDateKey(now) && minuteOfDay(slot.startTime) <= currentMinute
         if (conflict || isPast) {
-          await createTask(user.uid, directSchedule.title, 'free')
+          await createTask(
+            user.uid,
+            directSchedule.title,
+            requestedAttributes.category || 'free',
+            requestedAttributes.alsoPriority,
+            requestedAttributes.color,
+            requestedAttributes.colorMode,
+          )
           await complete(
             conflict
               ? `I added “${directSchedule.title}” to What’s on my mind, but ${formatSlot(slot, weekDays)} overlaps with “${conflict.title}.” Tell me another day and time.`
@@ -821,10 +2094,12 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         await createScheduledTask(user.uid, {
           title: directSchedule.title,
           ...slot,
-          color: pickRandomTaskColor(),
-          colorMode: 'automatic',
+          category: requestedAttributes.category || 'notUrgent',
+          alsoPriority: requestedAttributes.alsoPriority,
+          color: requestedAttributes.color || getAutomaticTaskColor(requestedAttributes.category || 'notUrgent'),
+          colorMode: requestedAttributes.colorMode || 'automatic',
         })
-        await complete(`Done—“${directSchedule.title}” was created and scheduled ${formatSlot(slot, weekDays)}.`, { ...EMPTY_SCHEDULING_STATE })
+        await complete(`Done—“${directSchedule.title}” was created${requestedAttributeDescription ? ` as ${requestedAttributeDescription}` : ''} and scheduled ${formatSlot(slot, weekDays)}.`, { ...EMPTY_SCHEDULING_STATE })
         return
       }
 
@@ -927,6 +2202,16 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
 
       if (/^undo[.!\s]*$/i.test(text) && schedulingState.lastAction) {
         const action = schedulingState.lastAction
+        if (action.type === 'bulk-completion' && Array.isArray(action.taskIds) && action.taskIds.length) {
+          await setTasksCompleted(user.uid, action.taskIds, Boolean(action.previousCompleted))
+          await complete(`Undone—I restored ${action.taskIds.length} ${action.taskIds.length === 1 ? 'task' : 'tasks'} to ${action.previousCompleted ? 'done' : 'active'}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        if (action.type === 'bulk-move' && Array.isArray(action.moves) && action.moves.length) {
+          await moveScheduledTasks(user.uid, action.moves.map((move) => ({ taskId: move.taskId, date: move.previousDate })))
+          await complete(`Undone—I moved ${action.moves.length} ${action.moves.length === 1 ? 'task' : 'tasks'} back to their previous days.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
         const task = tasks.find((item) => item.id === action.taskId)
         if (!task) {
           await complete('I could not find the task from the last action.', { ...EMPTY_SCHEDULING_STATE })
@@ -1086,6 +2371,12 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         return
       }
 
+      const scopeResponse = getConversationScopeResponse(text)
+      if (scopeResponse) {
+        await complete(scopeResponse, { ...EMPTY_SCHEDULING_STATE })
+        return
+      }
+
       const history = normalizedGeminiHistory(messages)
       const response = await askPlanningAssistant({ message: text, history, tasks, memory: aiMemory, planningDates, availability, currentDate: localDateKey(new Date()), interactionProfile: nextProfile })
       const correctedResponse = stopRepeatedPriorityPrompt(response, tasks, text)
@@ -1125,6 +2416,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       completed: false,
       color: '',
       colorMode: 'automatic',
+      category: 'notUrgent',
       ...defaults,
     })
   }
@@ -1142,21 +2434,43 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       startTime: task.startTime,
       endTime: task.endTime,
       completed: Boolean(task.completed),
+      category: task.category || (task.urgent ? 'urgent' : task.important ? 'important' : 'free'),
+      showInInbox: task.showInInbox === true || task.source === 'manual-calendar',
+      color: task.color || '',
+      colorMode: task.colorMode || (task.color ? 'manual' : 'automatic'),
+    })
+  }
+
+  function openInboxTaskEditor(task) {
+    setCalendarError('')
+    setCalendarEditor({
+      mode: 'edit',
+      origin: 'inbox',
+      taskId: task.id,
+      date: task.date || '',
+      title: task.title,
+      startTime: task.startTime || '',
+      endTime: task.endTime || '',
+      completed: Boolean(task.completed),
+      category: task.category || (task.urgent ? 'urgent' : task.important ? 'important' : 'free'),
+      showInInbox: task.showInInbox === true || task.source === 'manual-calendar',
       color: task.color || '',
       colorMode: task.colorMode || (task.color ? 'manual' : 'automatic'),
     })
   }
 
   async function saveCalendarEntry(values) {
-    const validationError = validateCalendarEntry(values)
+    const isInboxTask = calendarEditor.origin === 'inbox'
+    const validationError = isInboxTask ? validateOptionalScheduleEntry(values) : validateCalendarEntry(values)
     if (validationError) {
       setCalendarError(validationError)
       return
     }
 
-    const slot = { date: calendarEditor.date, startTime: values.startTime, endTime: values.endTime }
-    const conflict = findScheduleConflict(tasks, calendarEditor.taskId || '__new-calendar-task__', slot)
-    if (!values.completed && conflict) {
+    const slot = { date: values.date, startTime: values.startTime, endTime: values.endTime }
+    const shouldSchedule = !isInboxTask || values.scheduled
+    const conflict = shouldSchedule ? findScheduleConflict(tasks, calendarEditor.taskId || '__new-calendar-task__', slot) : null
+    if (shouldSchedule && !values.completed && conflict) {
       setCalendarError(`That time overlaps with “${conflict.title}” (${formatTimeRange(conflict.startTime, conflict.endTime)}). Choose another time first.`)
       return
     }
@@ -1165,11 +2479,35 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setCalendarError('')
     try {
       const entry = { ...values, ...slot, title: values.title.trim() }
-      if (calendarEditor.mode === 'edit') await updateScheduledTask(user.uid, calendarEditor.taskId, entry)
+      if (isInboxTask) await updateTaskDetails(user.uid, calendarEditor.taskId, {
+        ...entry,
+        showInInbox: Boolean(calendarEditor.showInInbox),
+        date: values.scheduled ? values.date : '',
+        startTime: values.scheduled ? values.startTime : '',
+        endTime: values.scheduled ? values.endTime : '',
+      })
+      else if (calendarEditor.mode === 'edit') await updateScheduledTask(user.uid, calendarEditor.taskId, entry)
       else await createScheduledTask(user.uid, entry)
       setCalendarEditor(null)
     } catch (error) {
       setCalendarError(error.code === 'permission-denied' ? 'Calendar access is blocked. Check the published Firestore rules.' : error.message || 'Could not save this calendar task.')
+    } finally {
+      setCalendarSaving(false)
+    }
+  }
+
+  async function deleteCalendarEntry() {
+    if (!calendarEditor?.taskId) return
+
+    const deletedTitle = calendarEditor.title
+    setCalendarSaving(true)
+    setCalendarError('')
+    try {
+      await deleteTask(user.uid, calendarEditor.taskId)
+      setCalendarEditor(null)
+      showCalendarNotice('success', `“${deletedTitle}” was deleted.`)
+    } catch (error) {
+      setCalendarError(error.code === 'permission-denied' ? 'Task deletion is blocked. Check the published Firestore rules.' : error.message || 'Could not delete this task.')
     } finally {
       setCalendarSaving(false)
     }
@@ -1277,13 +2615,13 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         <span className="floating-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5.5" width="17" height="15" rx="3" /><path d="M7.5 3.5v4M16.5 3.5v4M3.5 9.5h17M7.5 13h2M14.5 13h2M7.5 17h2M14.5 17h2" /></svg></span>
         <span>My week</span>
       </a>
-      <a href="#task-priorities" style={{ '--menu-index': 1, '--portrait-rotate': '1.5deg' }} className={`${activeSection === 'task-priorities' ? 'is-active' : ''} ${menuSelection === 'task-priorities' ? 'is-selected' : ''}`} aria-current={activeSection === 'task-priorities' ? 'page' : undefined} tabIndex={menuOpen ? 0 : -1} onClick={(event) => goToSection(event, 'task-priorities')}>
-        <span className="floating-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 4.5h9.5l3 3V20H6z" /><path d="M15.5 4.5V8h3M9 12h6M9 15.5h6M4 7.5H3v13h12" /></svg></span>
-        <span>My tasks</span>
-      </a>
-      <a href="#planning-workspace" style={{ '--menu-index': 2, '--portrait-rotate': '-1deg' }} className={`${activeSection === 'planning-workspace' ? 'is-active' : ''} ${menuSelection === 'planning-workspace' ? 'is-selected' : ''}`} aria-current={activeSection === 'planning-workspace' ? 'page' : undefined} tabIndex={menuOpen ? 0 : -1} onClick={(event) => goToSection(event, 'planning-workspace')}>
+      <a href="#planning-workspace" style={{ '--menu-index': 1, '--portrait-rotate': '-1deg' }} className={`${activeSection === 'planning-workspace' ? 'is-active' : ''} ${menuSelection === 'planning-workspace' ? 'is-selected' : ''}`} aria-current={activeSection === 'planning-workspace' ? 'page' : undefined} tabIndex={menuOpen ? 0 : -1} onClick={(event) => goToSection(event, 'planning-workspace')}>
         <span className="floating-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="3" /><path d="M9.5 9.5h5v5h-5zM9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" /></svg></span>
         <span>SchedMe AI</span>
+      </a>
+      <a href="#task-priorities" style={{ '--menu-index': 2, '--portrait-rotate': '1.5deg' }} className={`${activeSection === 'task-priorities' ? 'is-active' : ''} ${menuSelection === 'task-priorities' ? 'is-selected' : ''}`} aria-current={activeSection === 'task-priorities' ? 'page' : undefined} tabIndex={menuOpen ? 0 : -1} onClick={(event) => goToSection(event, 'task-priorities')}>
+        <span className="floating-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 4.5h9.5l3 3V20H6z" /><path d="M15.5 4.5V8h3M9 12h6M9 15.5h6M4 7.5H3v13h12" /></svg></span>
+        <span>My tasks</span>
       </a>
     </nav>
   </div>
@@ -1332,21 +2670,24 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
                 onDragOver={(event) => { if (calendarEditMode && draggedTaskId) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; moveCalendarDragPreview(event) } }}
                 onDrop={(event) => dropCalendarTask(event, day, period)}
               >
-                {entries.length ? entries.map((task) => calendarEditMode
+                {entries.length ? entries.map((task) => {
+                  const displayColor = getTaskDisplayColor(task)
+                  return calendarEditMode
                   ? <button
                     type="button"
                     draggable={!calendarSaving}
                     aria-grabbed={draggedTaskId === task.id}
-                    className={`week-event is-editable ${draggedTaskId === task.id ? 'is-dragging' : ''} ${task.color ? 'has-color' : ''} ${task.completed ? 'is-complete' : ''} ${task.urgent ? 'urgent' : task.important ? 'lime' : 'green'}`}
-                    style={task.color ? { '--task-color': task.color } : undefined}
+                    className={`week-event is-editable ${draggedTaskId === task.id ? 'is-dragging' : ''} ${displayColor ? 'has-color' : ''} ${task.completed ? 'is-complete' : ''} ${task.urgent ? 'urgent' : task.important ? 'lime' : 'green'}`}
+                    style={displayColor ? { '--task-color': displayColor } : undefined}
                     key={task.id}
                     onDragStart={(event) => startCalendarDrag(event, task)}
                     onDrag={moveCalendarDragPreview}
                     onDragEnd={finishCalendarDrag}
                     onClick={() => { if (!suppressCalendarClickRef.current) openExistingCalendarEntry(task) }}
                     aria-label={`Edit or drag ${task.title}, ${formatTimeRange(task.startTime, task.endTime)}`}
-                  ><span className="week-event-held-content"><span>{formatTimeRange(task.startTime, task.endTime)}</span><strong>{task.title}</strong><i aria-hidden="true">Hold + drag</i></span></button>
-                  : <article className={`week-event ${task.color ? 'has-color' : ''} ${task.completed ? 'is-complete' : ''} ${task.urgent ? 'urgent' : task.important ? 'lime' : 'green'}`} style={task.color ? { '--task-color': task.color } : undefined} key={task.id}><span>{formatTimeRange(task.startTime, task.endTime)}</span><strong>{task.title}</strong></article>)
+                  ><span className="week-event-held-content"><span className="week-event-meta"><span>{formatTimeRange(task.startTime, task.endTime)}</span><TaskClassificationSymbols task={task} /></span><strong>{task.title}</strong><i aria-hidden="true">Hold + drag</i></span></button>
+                  : <article className={`week-event ${displayColor ? 'has-color' : ''} ${task.completed ? 'is-complete' : ''} ${task.urgent ? 'urgent' : task.important ? 'lime' : 'green'}`} style={displayColor ? { '--task-color': displayColor } : undefined} key={task.id}><span className="week-event-meta"><span>{formatTimeRange(task.startTime, task.endTime)}</span><TaskClassificationSymbols task={task} /></span><strong>{task.title}</strong></article>
+                })
                   : !calendarEditMode && <span className="week-free-slot">Open</span>}
                 {calendarEditMode && <button type="button" className="week-add-button" onClick={() => openNewCalendarEntry(day, period)} aria-label={`Add a task on ${day.day}, ${period.range}`}><span aria-hidden="true">+</span><small>Add</small></button>}
               </div>
@@ -1355,20 +2696,26 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         </section>
 
         <div id="planning-workspace" className="dashboard-main-grid" data-reveal>
-          <TaskPanel group={groups[0]} tasks={tasksByGroup.free} onAdd={addTask} onComplete={completeTask} saving={taskBusy} error={taskError} />
+          <TaskPanel group={groups[0]} tasks={tasksByGroup.free} onAdd={addTask} onComplete={completeTask} onEdit={openInboxTaskEditor} onTaskDragStart={startTaskListDrag} onTaskDragMove={moveTaskListDragPreview} onTaskDragEnd={finishTaskListDrag} onTaskDragOver={updateTaskListDropTarget} onTaskDrop={moveTaskToList} draggedTaskId={taskListDrag.taskId} dropTarget={taskListDrag.targetGroup} dropTaskId={taskListDrag.targetTaskId} dropPosition={taskListDrag.position} saving={taskBusy} error={taskError} />
           <section id="schedme-ai" className="dashboard-panel dashboard-ai-panel">
             <div className="dashboard-panel-heading"><span className="dashboard-ai-mark" aria-hidden="true">{aiMemory.chatbotName.charAt(0).toUpperCase()}</span><div><h2>{aiMemory.chatbotName}</h2><p>{aiMemory.mood} planning companion · Gemini</p></div><div className="ai-header-actions"><button type="button" className="ai-settings-button" onClick={resetConversation}>Clear chat</button><button type="button" className="ai-settings-button" onClick={() => { setAiMemoryError(''); setSettingsOpen(true) }}>Personalize</button></div></div>
             {getSchedulingQueue(tasks).length > 0 && <button type="button" className="ai-unscheduled-banner" onClick={() => sendChat(null, 'Schedule my unscheduled tasks')} disabled={chatBusy || !conversationReady}><span>{getSchedulingQueue(tasks).length}</span><span><strong>Tasks need a time</strong><small>Schedule them one at a time</small></span><b>→</b></button>}
-            <div className="ai-chat-transcript" aria-live="polite">{messages.map((message, index) => <div className={`ai-chat-message ${message.role}`} key={`${index}-${message.role}`}><span className="ai-message-avatar" aria-hidden="true">{message.role === 'model' ? aiMemory.chatbotName.charAt(0).toUpperCase() : (user.displayName || 'Y').charAt(0).toUpperCase()}</span><div className="ai-chat-bubble"><p>{message.text}</p>{message.role === 'model' && message.plan && <PlanReview plan={message.plan} tasks={tasks} onApply={() => applyPlan(message.plan, index)} busy={planBusy} applied={message.planApplied} error={planError} />}{message.role === 'user' && <button type="button" className="ai-remember-button" onClick={() => rememberPrompt(message.text)} disabled={aiMemoryBusy || aiMemory.preferences.some((item) => item.toLocaleLowerCase() === message.text.trim().slice(0, 240).toLocaleLowerCase())} title="Save this message as a long-term preference">{aiMemory.preferences.some((item) => item.toLocaleLowerCase() === message.text.trim().slice(0, 240).toLocaleLowerCase()) ? 'Remembered' : 'Remember'}</button>}</div></div>)}{chatBusy && <p className="ai-thinking">Thinking…</p>}<span ref={chatEndRef} aria-hidden="true" /></div>
+            <div className="ai-chat-transcript" aria-live="polite">{messages.map((message, index) => <div className={`ai-chat-message ${message.role}`} key={`${index}-${message.role}`}><span className="ai-message-avatar" aria-hidden="true">{message.role === 'model' ? aiMemory.chatbotName.charAt(0).toUpperCase() : (user.displayName || 'Y').charAt(0).toUpperCase()}</span><div className="ai-chat-bubble">{message.kind === 'voice' ? <VoiceMessage duration={message.voiceDurationSeconds} src={voiceAudioUrlsRef.current.get(message.voiceId) || ''} transcript={message.text} /> : <p>{message.text}</p>}{message.role === 'model' && message.plan && <PlanReview plan={message.plan} tasks={tasks} onApply={() => applyPlan(message.plan, index)} busy={planBusy} applied={message.planApplied} error={planError} />}{message.role === 'user' && <button type="button" className="ai-remember-button" onClick={() => rememberPrompt(message.text)} disabled={aiMemoryBusy || aiMemory.preferences.some((item) => item.toLocaleLowerCase() === message.text.trim().slice(0, 240).toLocaleLowerCase())} title="Save this message as a long-term preference">{aiMemory.preferences.some((item) => item.toLocaleLowerCase() === message.text.trim().slice(0, 240).toLocaleLowerCase()) ? 'Remembered' : 'Remember'}</button>}</div></div>)}{chatBusy && <p className="ai-thinking">Thinking…</p>}<span ref={chatEndRef} aria-hidden="true" /></div>
             <div className="ai-prompt-suggestions"><button type="button" onClick={() => setChatInput('Schedule my unscheduled tasks')}>Schedule my tasks</button><button type="button" onClick={() => setChatInput('Make thesis / Monday / 2-3pm')}>Try compact format</button><button type="button" onClick={() => setChatInput('How are you?')}>Talk first</button></div>
-            <form className="ai-input-preview" onSubmit={sendChat}><input aria-label="Message SchedMe AI" value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Task / Day / Time — e.g. Thesis / Monday / 2-3pm" maxLength={2000} /><button type="submit" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button></form>
+            <form className={`ai-input-preview ${voiceRecording ? 'is-recording' : ''} ${voiceDraft ? 'has-voice' : ''}`} onSubmit={sendChat}>
+              {voiceRecording ? <div className="voice-recording-live"><div className="voice-recording-controls"><span className="voice-recording-dot" aria-hidden="true" /><span className="voice-recording-label">Recording</span><VoiceWaveform active /><time>{formatVoiceDuration(voiceDuration)}</time><button type="button" className="ai-mic-button is-recording" onClick={stopVoiceRecording} aria-label="Stop voice recording" title="Stop recording"><MicrophoneIcon /></button></div><p className={`voice-live-transcript ${chatInput ? 'has-words' : ''}`} role="status" aria-live="polite"><span>{voiceTranscriptStatus || 'Live transcription'}</span>{chatInput || (voiceTranscriptionSupported ? 'Your words will appear here as you speak.' : 'This browser can record audio but does not offer live transcription. Use Chrome or Edge for live words.')}</p></div> : <>
+                {voiceDraft && <VoiceMessage duration={voiceDraft.duration} src={voiceDraft.url} onRemove={discardVoiceDraft} />}
+                <div className="ai-input-row"><input aria-label="Message SchedMe AI" value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={voiceDraft ? (voiceTranscriptionSupported ? 'Review or correct the transcript…' : 'Type what you said before sending…') : 'Task / Day / Time — e.g. Thesis / Monday / 2-3pm'} maxLength={2000} /><div className="ai-input-actions"><button type="button" className={`ai-mic-button ${voiceStarting ? 'is-starting' : ''}`} onClick={requestVoiceRecording} disabled={chatBusy || voiceStarting || !conversationReady} aria-label={voiceStarting ? 'Waiting for microphone permission' : 'Record a voice message'} title={voiceStarting ? 'Waiting for microphone permission' : 'Record a voice message'}><MicrophoneIcon /></button><button type="submit" className="ai-send-button" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button></div></div>
+              </>}
+            </form>
+            {voiceError && <p className="ai-phase-note" role="alert">{voiceError}</p>}
             {chatError && <p className="ai-phase-note" role="alert">{chatError}</p>}
             {aiMemoryError && <p className="ai-phase-note" role="alert">{aiMemoryError}</p>}
             <p className="ai-phase-note">Conversation history reloads on your account. Use Remember for lasting preferences, or Clear chat to remove the transcript.</p>
           </section>
         </div>
 
-        <section id="task-priorities" className="dashboard-priority-section" data-reveal><div className="dashboard-section-title"><div><p className="dashboard-kicker">Stay focused</p><h2>Your task lists</h2></div><p>Urgent and important can overlap.</p></div><div className="dashboard-task-grid">{groups.slice(1).map((group) => <TaskPanel group={group} key={group.id} tasks={tasksByGroup[group.id]} onAdd={addTask} onComplete={completeTask} saving={taskBusy} error={taskError} />)}</div></section>
+        <section id="task-priorities" className="dashboard-priority-section" data-reveal><div className="dashboard-section-title"><div><p className="dashboard-kicker">Stay focused</p><h2>Your task lists</h2></div><p>Turn on editing, then drag tasks above, below, or into another list.</p></div><div className="dashboard-task-grid">{groups.slice(1).map((group) => <TaskPanel group={group} key={group.id} tasks={tasksByGroup[group.id]} onAdd={addTask} onComplete={completeTask} onEdit={openInboxTaskEditor} onTaskDragStart={startTaskListDrag} onTaskDragMove={moveTaskListDragPreview} onTaskDragEnd={finishTaskListDrag} onTaskDragOver={updateTaskListDropTarget} onTaskDrop={moveTaskToList} draggedTaskId={taskListDrag.taskId} dropTarget={taskListDrag.targetGroup} dropTaskId={taskListDrag.targetTaskId} dropPosition={taskListDrag.position} saving={taskBusy} error={taskError} />)}</div></section>
         <footer className="dashboard-footer">SchedMe · Your schedule stays yours.</footer>
       </div>
       {calendarDragPreview && <div
@@ -1376,9 +2723,32 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         style={{ left: calendarDragPreview.x, top: calendarDragPreview.y, ...(calendarDragPreview.color ? { '--task-color': calendarDragPreview.color } : {}) }}
         aria-hidden="true"
       ><div className="calendar-drag-preview-card"><span className="calendar-drag-preview-grip"><i /><i /><i /><i /><i /><i /></span><span className="calendar-drag-preview-copy"><small>{calendarDragPreview.time}</small><strong>{calendarDragPreview.title}</strong></span><b>Moving</b></div></div>}
+      {taskListDrag.taskId && <div
+        className="task-list-drag-preview"
+        style={{ left: taskListDrag.x, top: taskListDrag.y, ...(taskListDrag.color ? { '--task-color': taskListDrag.color } : {}) }}
+        aria-hidden="true"
+      ><div className="task-list-drag-preview-card"><span className="task-list-drag-preview-grip"><i /><i /><i /><i /><i /><i /></span><span className="task-list-drag-preview-copy"><strong>{taskListDrag.title}</strong><small>{taskListDrag.label}</small></span><b>Moving</b></div></div>}
+      <FloatingAssistant
+        assistantName={aiMemory.chatbotName}
+        assistantMood={aiMemory.mood}
+        userName={user.displayName || user.email || 'You'}
+        messages={messages}
+        tasks={tasks}
+        chatInput={chatInput}
+        setChatInput={setChatInput}
+        onSend={sendChat}
+        chatBusy={chatBusy}
+        conversationReady={conversationReady}
+        chatError={chatError}
+        onApplyPlan={applyPlan}
+        planBusy={planBusy}
+        planError={planError}
+        getVoiceUrl={(voiceId) => voiceAudioUrlsRef.current.get(voiceId) || ''}
+      />
       <div className={`floating-menu-backdrop ${menuOpen ? 'is-visible' : ''}`} aria-hidden="true" />
       {settingsOpen && <AssistantSettings memory={aiMemory} onClose={() => setSettingsOpen(false)} onSave={saveAssistantSettings} onForget={forgetPreference} saving={aiMemoryBusy} error={aiMemoryError} />}
-      {calendarEditor && <CalendarEditorModal editor={calendarEditor} onClose={() => { setCalendarEditor(null); setCalendarError('') }} onConfirm={saveCalendarEntry} saving={calendarSaving} error={calendarError} />}
+      {microphonePermissionPrompt && <MicrophonePermissionModal blocked={microphonePermissionPrompt === 'blocked'} onCancel={() => setMicrophonePermissionPrompt(null)} onContinue={() => { setMicrophonePermissionPrompt(null); startVoiceRecording() }} />}
+      {calendarEditor && <CalendarEditorModal editor={calendarEditor} onClose={() => { setCalendarEditor(null); setCalendarError('') }} onConfirm={saveCalendarEntry} onDelete={deleteCalendarEntry} saving={calendarSaving} error={calendarError} />}
     </main>
   )
 }

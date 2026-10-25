@@ -73,13 +73,15 @@ export function subscribeToConversation(uid, onConversation, onError) {
 
 export function saveConversation(uid, messages, schedulingState, interactionProfile) {
   const normalizedState = normalizeSchedulingState(schedulingState)
-  const safeMessages = jsonSafe(messages.slice(-MAX_SAVED_MESSAGES).map(({ role, text, plan, planApplied, kind, date }) => ({
+  const safeMessages = jsonSafe(messages.slice(-MAX_SAVED_MESSAGES).map(({ role, text, plan, planApplied, kind, date, voiceId, voiceDurationSeconds }) => ({
     role: role === 'user' ? 'user' : 'model',
     text: String(text || '').slice(0, 4000),
     ...(plan ? { plan } : {}),
     ...(planApplied ? { planApplied: true } : {}),
-    ...(kind === 'daily-greeting' ? { kind } : {}),
+    ...(kind === 'daily-greeting' || kind === 'voice' ? { kind } : {}),
     ...(kind === 'daily-greeting' && /^\d{4}-\d{2}-\d{2}$/.test(date || '') ? { date } : {}),
+    ...(kind === 'voice' && typeof voiceId === 'string' ? { voiceId: voiceId.slice(0, 80) } : {}),
+    ...(kind === 'voice' && Number.isFinite(voiceDurationSeconds) ? { voiceDurationSeconds: Math.max(1, Math.min(300, Math.round(voiceDurationSeconds))) } : {}),
   })))
   return setDoc(userDocument(uid), {
     chatHistory: safeMessages,

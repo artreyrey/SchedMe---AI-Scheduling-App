@@ -52,3 +52,12 @@ export function validateCalendarEntry({ title, startTime, endTime }) {
   if ((endHour * 60) + endMinute <= (startHour * 60) + startMinute) return 'End time must be after the start time.'
   return ''
 }
+
+export function validateOptionalScheduleEntry({ title, scheduled, date, startTime, endTime }) {
+  const cleanedTitle = String(title || '').trim()
+  if (!cleanedTitle) return 'Enter a task title.'
+  if (cleanedTitle.length > 240) return 'Keep the task title under 240 characters.'
+  if (!scheduled) return ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return 'Choose a date or select Schedule later.'
+  return validateCalendarEntry({ title: cleanedTitle, startTime, endTime })
+}

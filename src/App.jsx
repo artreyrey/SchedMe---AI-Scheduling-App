@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { createUserWithEmailAndPassword, GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut, updateProfile } from 'firebase/auth'
+import { createUserWithEmailAndPassword, GoogleAuthProvider, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signOut, updateProfile } from 'firebase/auth'
 import { auth } from './firebase/config.js'
 import Dashboard from './Dashboard.jsx'
+import ResetPassword from './components/ResetPassword.jsx'
 import ThemePicker from './components/ThemePicker.jsx'
+import { maskEmailAddress } from './authUtils.js'
 import { resolveTheme, themeColor } from './themePreferences.js'
 
 const categories = [
@@ -29,6 +31,15 @@ function getInitialTheme() {
   return resolveTheme(null, window.matchMedia?.('(prefers-color-scheme: dark)').matches)
 }
 
+function getInitialAuthMode() {
+  return new URLSearchParams(window.location.search).get('auth') === 'signin' ? 'signin' : null
+}
+
+function isPasswordResetPage() {
+  const params = new URLSearchParams(window.location.search)
+  return window.location.pathname.replace(/\/$/, '') === '/reset-password' || params.get('mode') === 'resetPassword'
+}
+
 function EyeIcon({ visible }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-5">
@@ -41,7 +52,7 @@ function EyeIcon({ visible }) {
 
 function App() {
   const [theme, setTheme] = useState(getInitialTheme)
-  const [authMode, setAuthMode] = useState(null)
+  const [authMode, setAuthMode] = useState(getInitialAuthMode)
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -49,7 +60,9 @@ function App() {
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [authError, setAuthError] = useState('')
+  const [authNotice, setAuthNotice] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
+  const [passwordResetBusy, setPasswordResetBusy] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [authResolved, setAuthResolved] = useState(!auth)
 
@@ -76,6 +89,7 @@ function App() {
 
   function openAuth(mode) {
     setAuthError('')
+    setAuthNotice('')
     setConfirmPassword('')
     setShowPassword(false)
     setShowConfirmPassword(false)
@@ -85,6 +99,7 @@ function App() {
   async function handleAuthSubmit(event) {
     event.preventDefault()
     setAuthError('')
+    setAuthNotice('')
 
     if (authMode === 'signup' && password !== confirmPassword) {
       setAuthError('Your passwords do not match.')
@@ -125,6 +140,7 @@ function App() {
 
   async function handleGoogleSignIn() {
     setAuthError('')
+    setAuthNotice('')
     if (!auth) {
       setAuthError('Sign-in is not configured yet. Add your Firebase settings to enable accounts.')
       return
@@ -148,8 +164,49 @@ function App() {
     }
   }
 
+  async function handlePasswordReset() {
+    const resetEmail = email.trim()
+    const resetNotice = `If an account uses ${maskEmailAddress(resetEmail)}, Firebase has sent it a password reset link. Check your inbox and spam folder.`
+    setAuthError('')
+    setAuthNotice('')
+    if (!resetEmail) {
+      setAuthError('Enter your email address first, then choose Forgot password.')
+      return
+    }
+    if (!auth) {
+      setAuthError('Password reset is not configured yet. Add your Firebase settings to enable accounts.')
+      return
+    }
+
+    setPasswordResetBusy(true)
+    try {
+      auth.useDeviceLanguage()
+      await sendPasswordResetEmail(auth, resetEmail, {
+        url: `${window.location.origin}/?auth=signin`,
+      })
+      setAuthNotice(resetNotice)
+    } catch (error) {
+      if (error.code === 'auth/user-not-found') {
+        setAuthNotice(resetNotice)
+      } else {
+        const messages = {
+          'auth/invalid-email': 'Enter a valid email address.',
+          'auth/too-many-requests': 'Too many reset attempts. Please wait a moment and try again.',
+          'auth/network-request-failed': 'The reset email could not be sent because of a network problem. Please try again.',
+        }
+        setAuthError(messages[error.code] || 'The reset email could not be sent. Please try again.')
+      }
+    } finally {
+      setPasswordResetBusy(false)
+    }
+  }
+
   async function handleSignOut() {
     if (auth) await signOut(auth)
+  }
+
+  if (isPasswordResetPage()) {
+    return <ResetPassword theme={theme} onSelectTheme={setTheme} />
   }
 
   if (!authResolved) {
@@ -299,7 +356,7 @@ function App() {
                 </>
               )}
               {authMode === 'signin' && <label className="auth-label" htmlFor="auth-email">Email</label>}
-              <input id="auth-email" className="auth-input" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} />
+              <input id="auth-email" className="auth-input" type="email" autoComplete="email" required value={email} onChange={(event) => { setEmail(event.target.value); setAuthNotice('') }} />
               <label className="auth-label mt-4" htmlFor="auth-password">Password</label>
               <div className="auth-password-wrap">
                 <input id="auth-password" className="auth-input" type={showPassword ? 'text' : 'password'} autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} minLength={6} required value={password} onChange={(event) => setPassword(event.target.value)} />
@@ -307,6 +364,7 @@ function App() {
                   <EyeIcon visible={showPassword} />
                 </button>
               </div>
+              {authMode === 'signin' && <button type="button" className="auth-forgot" onClick={handlePasswordReset} disabled={authBusy || passwordResetBusy}>{passwordResetBusy ? 'Sending reset link…' : 'Forgot password?'}</button>}
               {authMode === 'signup' && (
                 <>
                   <label className="auth-label mt-4" htmlFor="auth-confirm-password">Confirm password</label>
@@ -319,12 +377,13 @@ function App() {
                 </>
               )}
               {authError && <p className="auth-error mt-3" role="alert">{authError}</p>}
-              <button className="auth-submit mt-6 w-full rounded-full px-5 py-3.5 text-sm font-bold" type="submit" disabled={authBusy}>
+              {authNotice && <p className="auth-success mt-3" role="status">{authNotice}</p>}
+              <button className="auth-submit mt-6 w-full rounded-full px-5 py-3.5 text-sm font-bold" type="submit" disabled={authBusy || passwordResetBusy}>
                 {authBusy ? 'One moment…' : authMode === 'signup' ? 'Create account' : 'Sign in'}
               </button>
             </form>
             <div className="auth-divider" aria-hidden="true"><span>or</span></div>
-            <button type="button" className="auth-google w-full rounded-full px-5 py-3.5 text-sm font-semibold" onClick={handleGoogleSignIn} disabled={authBusy}>
+            <button type="button" className="auth-google w-full rounded-full px-5 py-3.5 text-sm font-semibold" onClick={handleGoogleSignIn} disabled={authBusy || passwordResetBusy}>
               <svg aria-hidden="true" viewBox="0 0 48 48" className="size-5">
                 <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.63 17.74 9.5 24 9.5Z" />
                 <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.72 7.18l7.62 5.91c4.45-4.1 7.14-10.13 7.14-17.56Z" />
