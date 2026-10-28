@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { applyAiPlanning, createScheduledTask, createTask, deleteTask, deleteTasks, moveScheduledTasks, moveTaskToPriorityList, replaceScheduledTask, scheduleTask, setTaskColor, setTaskCompleted, setTaskListOrder, setTasksCompleted, setTaskPriority, setTasksPriority, subscribeToTasks, unscheduleTask, updateScheduledTask, updateTaskDetails } from './services/taskService.js'
+import { createScheduledTask, createTask, deleteTask, deleteTasks, moveScheduledTasks, moveTaskToPriorityList, replaceScheduledTask, scheduleTask, setTaskColor, setTaskCompleted, setTaskListOrder, setTasksCompleted, setTaskPriority, setTasksPriority, subscribeToTasks, unscheduleTask, updateScheduledTask, updateTaskDetails } from './services/taskService.js'
 import { askPlanningAssistant } from './ai/planningAgent.js'
 import { validatePlanningResponse } from './ai/planValidation.js'
 import { addPromptToAiMemory, AI_MOODS, DEFAULT_AI_MEMORY, forgetAiPreference, saveAiMemory, subscribeToAiMemory } from './services/aiMemoryService.js'
 import { clearConversation, DEFAULT_INTERACTION_PROFILE, EMPTY_SCHEDULING_STATE, learnInteractionStyle, saveConversation, subscribeToConversation } from './services/conversationService.js'
-import { findScheduleConflict, findTaskMatch, formatSlot, formatTimeRange, getMondayWeek, getSchedulingQueue, parseBulkMoveRequest, parseDirectScheduleRequest, parseNamedTaskMoveRequest, parseSchedulingInput, planBulkTaskMoves, planNamedTaskMoves, suggestAvailableSlots } from './ai/schedulingIntent.js'
+import { findScheduleConflict, findTaskMatch, formatSlot, formatTimeRange, getMondayWeek, getSchedulingQueue, parseConversationalBulkMoveRequest, parseDirectScheduleRequest, parseNamedTaskMoveRequest, parseSchedulingInput, planBulkTaskMoves, planNamedTaskMoves, suggestAvailableSlots } from './ai/schedulingIntent.js'
 import { prepareDailyGreetingHistory, preserveGreetingDate } from './ai/conversationGreeting.js'
 import { confirmsTaskDeletion, declinesTaskDeletion, isCancellationMessage, wantsFullCancellationRemoval, wantsToScheduleAnotherTask } from './ai/cancellationIntent.js'
 import { getDefaultPeriodTimes, getDroppedCalendarSlot, validateCalendarEntry, validateOptionalScheduleEntry } from './ai/calendarEditor.js'
@@ -12,7 +12,15 @@ import { applyTaskCompletionContext, parseNamedTaskCompletionRequest, parseTaskC
 import { parseTaskAttributesIntent, parseTaskCategoryIntent, parseTaskColorChangeIntent, parseTaskCreationIntent } from './ai/taskCreationIntent.js'
 import { parseNamedTaskDeletionRequest, parseNamedTaskPriorityRequest } from './ai/taskActionIntent.js'
 import { getConversationScopeResponse } from './ai/conversationScope.js'
+import { buildCompactActionContext } from './ai/actionContext.js'
+import { actionIntentShadowEnabled, contextSchedulingActionsEnabled, contextTaskActionsEnabled, interpretActionIntent } from './ai/actionInterpreter.js'
+import { getTrustedRecentSlot, planContextSchedulingAction, shouldInterpretContextScheduling } from './ai/contextSchedulingAction.js'
+import { planContextAvailabilityAction } from './ai/availabilityAction.js'
+import { planContextTaskAction, shouldInterpretContextTaskAction } from './ai/contextTaskAction.js'
+import { confirmedPendingAction, createPendingAction, mergePendingAction } from './ai/pendingAction.js'
 import { deleteUserVoiceMessages, loadVoiceMessage, saveVoiceMessage } from './services/voiceMessageStore.js'
+import { commitTaskOperation, createTaskDocumentId, newOperationRequestId, undoLastTaskOperation } from './services/taskOperationService.js'
+import { consumeAiRequestBudget } from './services/aiRequestBudget.js'
 import { planTaskListDrop, sortTasksForGroup } from './taskListOrder.js'
 import ThemePicker from './components/ThemePicker.jsx'
 
@@ -662,6 +670,7 @@ function PlanReview({ plan, tasks, onApply, busy, applied, error }) {
 function explainAiError(error) {
   const code = String(error?.code || '').toLowerCase()
   const detail = String(error?.message || '').toLowerCase()
+  if (code.startsWith('operation/') || code.startsWith('ai/local-')) return error.message
   if (code.includes('api-not-enabled')) {
     return 'Firebase AI Logic is not enabled for this Firebase project yet. Open Firebase Console → AI Logic and finish enabling the Gemini Developer API.'
   }
@@ -1100,7 +1109,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setAiMemoryError(error.code === 'permission-denied' ? 'Firestore blocked access to your AI preferences. Check the published owner-only rules.' : 'Could not load your saved AI preferences.')
   }), [user.uid])
 
-  useEffect(() => subscribeToConversation(user.uid, ({ messages: savedMessages, schedulingState: savedState, interactionProfile: savedProfile }) => {
+  useEffect(() => subscribeToConversation(user.uid, ({ messages: savedMessages, schedulingState: savedState, interactionProfile: savedProfile, availability: savedAvailability }) => {
     const today = localDateKey(new Date())
     const greetingText = openingMessage(user, aiMemory)
     const preparedHistory = prepareDailyGreetingHistory(savedMessages, greetingText, today)
@@ -1116,8 +1125,9 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     restoreSavedVoiceMessages(visibleMessages)
     setSchedulingState(nextState)
     setInteractionProfile(savedProfile)
+    setAvailability(savedAvailability)
     setConversationReady(true)
-    if (needsGreeting || preparedHistory.changed || savedState.lastGreetingDate !== today) saveConversation(user.uid, visibleMessages, nextState, savedProfile).catch(() => {})
+    if (needsGreeting || preparedHistory.changed || savedState.lastGreetingDate !== today) saveConversation(user.uid, visibleMessages, nextState, savedProfile, savedAvailability).catch(() => {})
   }, () => {
     setMessages([{ role: 'model', text: 'Ready when you are. Choose a task to schedule, or type Task / Day / Time.' }])
     setConversationReady(true)
@@ -1588,14 +1598,16 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setMessages(freshMessages)
     setSchedulingState({ ...EMPTY_SCHEDULING_STATE, lastGreetingDate: today })
     setInteractionProfile({ ...DEFAULT_INTERACTION_PROFILE })
+    setAvailability([])
   }
 
-  async function persistConversation(nextMessages, nextState = schedulingState, nextProfile = interactionProfile) {
+  async function persistConversation(nextMessages, nextState = schedulingState, nextProfile = interactionProfile, nextAvailability = availability) {
     const stateWithGreeting = preserveGreetingDate(nextState, schedulingState, greetedDateRef.current)
     setMessages(nextMessages)
     setSchedulingState(stateWithGreeting)
     setInteractionProfile(nextProfile)
-    try { await saveConversation(user.uid, nextMessages, stateWithGreeting, nextProfile) }
+    setAvailability(nextAvailability)
+    try { await saveConversation(user.uid, nextMessages, stateWithGreeting, nextProfile, nextAvailability) }
     catch { setChatError('Your reply worked, but the conversation history could not be saved.') }
   }
 
@@ -1603,8 +1615,10 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     event?.preventDefault()
     const text = (directMessage || chatInput).trim()
     if (!text || chatBusy || voiceRecording || !conversationReady) return
+    const operationRequestId = newOperationRequestId('chat')
 
     const preliminary = parseSchedulingInput(text, tasks, weekDays, schedulingState.activeTaskId, aiMemory.defaultDuration || 60)
+    const bulkMoveRequest = parseConversationalBulkMoveRequest(text, messages)
     const nextProfile = learnInteractionStyle(interactionProfile, text, preliminary.isCompact)
     let voiceMessage = null
     if (!directMessage && voiceDraft) {
@@ -1634,7 +1648,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       const now = new Date()
       const currentMinute = now.getHours() * 60 + now.getMinutes()
       if (slot.date === localDateKey(now) && minuteOfDay(slot.startTime) <= currentMinute) {
-        await complete(`That time has already passed today. What later time should I use for “${task.title}”?`, { ...state, activeTaskId: task.id, date: slot.date, startTime: '', endTime: '', pendingConflict: null })
+        await complete(`That time has already passed today. What later time should I use for “${task.title}”?`, { ...state, activeTaskId: task.id, lastReferencedTaskId: task.id, date: slot.date, startTime: '', endTime: '', pendingConflict: null })
         return
       }
       const conflict = findScheduleConflict(tasks, task.id, slot)
@@ -1642,34 +1656,474 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         const alternatives = suggestAvailableSlots(tasks, task.id, slot).map((item) => formatSlot(item, weekDays).split(', ')[1]).join(' or ')
         await complete(
           `${formatSlot(slot, weekDays)} overlaps with “${conflict.title}.” Would you like to put “${task.title}” there and return “${conflict.title}” to What’s on my mind, or keep it and choose another time${alternatives ? ` such as ${alternatives}` : ''}?`,
-          { ...state, activeTaskId: task.id, date: slot.date, startTime: slot.startTime, endTime: slot.endTime, pendingConflict: { incomingTaskId: task.id, displacedTaskId: conflict.id, slot } },
+          { ...state, activeTaskId: task.id, lastReferencedTaskId: task.id, date: slot.date, startTime: slot.startTime, endTime: slot.endTime, pendingConflict: { incomingTaskId: task.id, displacedTaskId: conflict.id, slot } },
         )
         return
       }
 
-      await scheduleTask(user.uid, task.id, slot)
-      const lastAction = {
+      await commitTaskOperation(user.uid, {
+        requestId: operationRequestId,
         type: task.date ? 'move' : 'schedule',
+        description: `${task.title} → ${slot.date} ${slot.startTime}-${slot.endTime}`,
+        changes: [{
+          kind: 'update',
+          taskId: task.id,
+          data: { ...slot, source: 'user-directed-schedule' },
+        }],
+      })
+      const recentSlot = getTrustedRecentSlot(schedulingState, task)
+      const lastAction = {
+        type: recentSlot || task.date ? 'move' : 'schedule',
         taskId: task.id,
-        previousSlot: task.date ? { date: task.date, startTime: task.startTime, endTime: task.endTime } : null,
+        previousSlot: recentSlot || (task.date ? { date: task.date, startTime: task.startTime, endTime: task.endTime } : null),
+        slot,
       }
       if (state.queueMode) {
         const following = nextQueuedTask(state, [task.id])
         if (following) {
           await complete(
             `Done—“${task.title}” is scheduled ${formatSlot(slot, weekDays)}. Next is “${following.title}.” What day and time work for it? You can reply like Monday-2-3pm, skip, or stop.`,
-            { ...EMPTY_SCHEDULING_STATE, queueMode: true, activeTaskId: following.id, deferredTaskIds: state.deferredTaskIds, lastAction },
+            { ...EMPTY_SCHEDULING_STATE, queueMode: true, activeTaskId: following.id, lastReferencedTaskId: task.id, deferredTaskIds: state.deferredTaskIds, lastAction },
           )
           return
         }
       }
-      await complete(`Done—“${task.title}” is scheduled ${formatSlot(slot, weekDays)}. You can say “undo” if you want to change it.`, { ...EMPTY_SCHEDULING_STATE, lastAction })
+      await complete(`Done—“${task.title}” is scheduled ${formatSlot(slot, weekDays)}. You can say “undo” if you want to change it.`, { ...EMPTY_SCHEDULING_STATE, lastReferencedTaskId: task.id, lastAction })
+    }
+
+    const pendingActionState = (pendingAction, taskId = '') => ({
+      ...EMPTY_SCHEDULING_STATE,
+      pendingAction,
+      lastReferencedTaskId: taskId || schedulingState.lastReferencedTaskId,
+      lastAction: schedulingState.lastAction,
+    })
+
+    const finishedTaskActionState = (taskId = '', lastAction = null) => ({
+      ...EMPTY_SCHEDULING_STATE,
+      lastReferencedTaskId: taskId || null,
+      lastAction,
+    })
+
+    const handleContextTaskPlan = async (plan, action) => {
+      if (plan.status === 'unsupported') return false
+
+      if (plan.status === 'clarify') {
+        const pendingAction = createPendingAction(action, { reason: plan.reason, missingFields: plan.missingFields })
+        const pendingState = pendingActionState(pendingAction, plan.task?.id)
+        if (plan.reason === 'ambiguous_task') {
+          const choices = plan.matches.slice(0, 4).map((task) => `“${task.title}”`).join(', ')
+          await complete(`I found more than one matching task: ${choices}. Which one do you mean?`, pendingState)
+        } else if (plan.reason === 'missing_title') {
+          await complete('What should I call the new task?', pendingState)
+        } else if (plan.reason === 'missing_priority') {
+          await complete(`Should “${plan.task.title}” be urgent, important, urgent and important, flexible, or unclassified?`, pendingState)
+        } else if (plan.reason === 'missing_color') {
+          await complete(`What color should I use for “${plan.task.title}”?`, pendingState)
+        } else if (plan.reason === 'missing_date') {
+          await complete('What day should I schedule the new task?', pendingState)
+        } else if (plan.reason === 'missing_time') {
+          await complete('What time should I schedule the new task?', pendingState)
+        } else if (plan.reason === 'invalid_slot') {
+          await complete('What valid day and time should I use for the new task?', pendingState)
+        } else {
+          await complete('Which task do you mean?', pendingState)
+        }
+        return true
+      }
+
+      if (plan.status === 'confirm') {
+        const pendingAction = createPendingAction(action, { reason: 'confirm_delete', awaitingConfirmation: true })
+        const deletionTargets = plan.tasks || [plan.task]
+        const names = deletionTargets.map((task) => `“${task.title}”`).join(' and ')
+        await complete(`Delete ${names} permanently from your tasks and calendar?`, pendingActionState(pendingAction, deletionTargets.length === 1 ? deletionTargets[0].id : ''))
+        return true
+      }
+
+      if (plan.status === 'unchanged') {
+        let message = `“${plan.task.title}” is already unchanged.`
+        if (plan.operation === 'completion') message = `“${plan.task.title}” is already ${plan.completed ? 'done' : 'active'}.`
+        if (plan.operation === 'priority') message = `“${plan.task.title}” is already ${plan.label}.`
+        if (plan.operation === 'color') message = `“${plan.task.title}” already uses that color.`
+        if (plan.operation === 'unschedule') message = `“${plan.task.title}” is already off the calendar.`
+        await complete(message, finishedTaskActionState(plan.task.id))
+        return true
+      }
+
+      if (plan.status !== 'ready') return false
+
+      if (plan.operation === 'create' || plan.operation === 'create_scheduled') {
+        if (plan.operation === 'create_scheduled') {
+          const slot = { date: plan.data.date, startTime: plan.data.startTime, endTime: plan.data.endTime }
+          const conflict = findScheduleConflict(tasks, '__new-context-task__', slot)
+          const now = new Date()
+          const isPast = slot.date === localDateKey(now) && minuteOfDay(slot.startTime) <= now.getHours() * 60 + now.getMinutes()
+          if (conflict || isPast) {
+            const pendingAction = createPendingAction(action, { reason: conflict ? 'schedule_conflict' : 'past_time', missingFields: ['startTime', 'endTime'] })
+            await complete(
+              conflict
+                ? `${formatSlot(slot, weekDays)} overlaps with “${conflict.title}.” What other time should I use?`
+                : 'That time has already passed. What later time should I use?',
+              pendingActionState(pendingAction),
+            )
+            return true
+          }
+        }
+        const taskId = createTaskDocumentId(user.uid)
+        const normalizedCategory = plan.operation === 'create_scheduled' && plan.data.category === 'free' ? 'notUrgent' : plan.data.category
+        const taskData = {
+          title: plan.data.title,
+          category: normalizedCategory,
+          urgent: normalizedCategory === 'urgent' || plan.data.alsoPriority,
+          important: normalizedCategory === 'important' || plan.data.alsoPriority,
+          completed: false,
+          color: plan.data.color || '',
+          colorMode: plan.data.color ? 'manual' : 'automatic',
+          ...(plan.operation === 'create_scheduled' ? {
+            date: plan.data.date,
+            startTime: plan.data.startTime,
+            endTime: plan.data.endTime,
+            showInInbox: true,
+            source: 'user-directed-ai-create',
+          } : {}),
+        }
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: plan.operation,
+          description: `Created ${plan.data.title}`,
+          changes: [{ kind: 'create', taskId, data: taskData }],
+        })
+        const message = plan.operation === 'create_scheduled'
+          ? `Done—“${plan.data.title}” was created and scheduled ${formatSlot(plan.data, weekDays)}.`
+          : `Done—“${plan.data.title}” was added to your ${plan.data.label} list.`
+        await complete(message, finishedTaskActionState(taskId))
+        return true
+      }
+
+      if (plan.operation === 'completion') {
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: plan.completed ? 'complete' : 'reopen',
+          description: `${plan.completed ? 'Completed' : 'Reopened'} ${plan.task.title}`,
+          changes: [{ kind: 'update', taskId: plan.task.id, data: { completed: plan.completed } }],
+        })
+        await complete(plan.completed ? `Done—“${plan.task.title}” is marked complete.` : `Done—“${plan.task.title}” is active again.`, finishedTaskActionState(plan.task.id))
+        return true
+      }
+      if (plan.operation === 'priority') {
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'priority',
+          description: `Changed priority for ${plan.task.title}`,
+          changes: [{
+            kind: 'update',
+            taskId: plan.task.id,
+            data: {
+              category: plan.category,
+              urgent: plan.category === 'urgent' || plan.alsoPriority,
+              important: plan.category === 'important' || plan.alsoPriority,
+            },
+          }],
+        })
+        await complete(`Done—“${plan.task.title}” is now ${plan.label}.`, finishedTaskActionState(plan.task.id))
+        return true
+      }
+      if (plan.operation === 'color') {
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'color',
+          description: `Changed color for ${plan.task.title}`,
+          changes: [{ kind: 'update', taskId: plan.task.id, data: { color: plan.color, colorMode: 'manual' } }],
+        })
+        await complete(`Done—“${plan.task.title}” now uses ${plan.color}.`, finishedTaskActionState(plan.task.id))
+        return true
+      }
+      if (plan.operation === 'unschedule') {
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'unschedule',
+          description: `Unscheduled ${plan.task.title}`,
+          changes: [{ kind: 'update', taskId: plan.task.id, data: {}, removeFields: ['date', 'startTime', 'endTime', 'source'] }],
+        })
+        const lastAction = { type: 'unschedule', taskId: plan.task.id, previousSlot: plan.previousSlot, slot: null }
+        await complete(`Done—“${plan.task.title}” was removed from the calendar while keeping its other details.`, finishedTaskActionState(plan.task.id, lastAction))
+        return true
+      }
+      if (plan.operation === 'delete') {
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'delete',
+          description: `Deleted ${plan.task.title}`,
+          changes: [{ kind: 'delete', taskId: plan.task.id }],
+        })
+        await complete(`Done—“${plan.task.title}” was permanently deleted.`, finishedTaskActionState())
+        return true
+      }
+      if (plan.operation === 'delete_many') {
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'delete-many',
+          description: `Deleted ${plan.tasks.length} tasks`,
+          changes: plan.tasks.map((task) => ({ kind: 'delete', taskId: task.id })),
+        })
+        const names = plan.tasks.map((task) => `“${task.title}”`).join(' and ')
+        await complete(`Done—${names} were permanently deleted.`, finishedTaskActionState())
+        return true
+      }
+      return false
     }
 
     try {
+      const savedPendingAction = schedulingState.pendingAction
+      if (savedPendingAction && /^(?:never mind|nevermind|forget it|cancel request|stop|not now)[.!\s]*$/i.test(text)) {
+        await complete('Okay—the pending change was canceled.', {
+          ...EMPTY_SCHEDULING_STATE,
+          lastReferencedTaskId: schedulingState.lastReferencedTaskId,
+          lastAction: schedulingState.lastAction,
+        })
+        return
+      }
+
+      let forcedAction = null
+      if (savedPendingAction?.awaitingConfirmation) {
+        if (confirmsTaskDeletion(text)) forcedAction = confirmedPendingAction(savedPendingAction)
+        else if (declinesTaskDeletion(text) || isStopMessage(text)) {
+          await complete('Okay—I did not delete anything.', {
+            ...EMPTY_SCHEDULING_STATE,
+            lastReferencedTaskId: schedulingState.lastReferencedTaskId,
+            lastAction: schedulingState.lastAction,
+          })
+          return
+        } else {
+          await complete('Please answer yes to delete it permanently, or no to keep it.', schedulingState)
+          return
+        }
+      }
+
+      const useContextScheduling = !bulkMoveRequest.isBulk && contextSchedulingActionsEnabled() && shouldInterpretContextScheduling({ text, schedulingState, preliminary })
+      const useContextTaskAction = !bulkMoveRequest.isBulk && contextTaskActionsEnabled() && shouldInterpretContextTaskAction({ text, schedulingState })
+      const shouldRequestAction = !forcedAction && !bulkMoveRequest.isBulk && (useContextScheduling || useContextTaskAction || actionIntentShadowEnabled())
+      let action = forcedAction
+      if (shouldRequestAction) {
+        const actionContext = buildCompactActionContext({
+          message: text,
+          messages,
+          tasks,
+          schedulingState,
+          memory: aiMemory,
+          interactionProfile: nextProfile,
+          availability,
+          currentDate: localDateKey(new Date()),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        })
+        try {
+          consumeAiRequestBudget(user.uid)
+          action = await interpretActionIntent(actionContext)
+        }
+        catch (error) { console.warn('[SchedMe context actions] Interpreter unavailable; using the existing scheduler.', error?.message || error) }
+      }
+
+      if (action) {
+        action = mergePendingAction(action, savedPendingAction)
+        if (action.intent === 'create_task') {
+          action = {
+            ...action,
+            patch: {
+              ...action.patch,
+              ...(preliminary.day && !preliminary.day.ambiguous ? { date: preliminary.day.key } : {}),
+              ...(preliminary.time ? { startTime: preliminary.time.startTime, endTime: preliminary.time.endTime } : {}),
+            },
+          }
+        }
+        if (actionIntentShadowEnabled()) {
+          console.info('[SchedMe intent shadow]', {
+            intent: action.intent,
+            confidence: action.confidence,
+            scope: action.scope,
+            targetTaskIds: action.target.taskIds,
+            targetQuery: action.target.query,
+            patchFields: Object.keys(action.patch),
+            missingFields: action.missingFields,
+            requiresConfirmation: action.requiresConfirmation,
+            invalidTargetIds: action.invalidTargetIds,
+          })
+        }
+
+        if (contextSchedulingActionsEnabled() && (useContextScheduling || savedPendingAction)) {
+          const availabilityNow = new Date()
+          const availabilityPlan = planContextAvailabilityAction({
+            action,
+            text,
+            tasks,
+            schedulingState,
+            preliminary,
+            planningDates,
+            availability,
+            defaultDuration: aiMemory.defaultDuration || 60,
+            currentDate: localDateKey(availabilityNow),
+            currentTime: `${String(availabilityNow.getHours()).padStart(2, '0')}:${String(availabilityNow.getMinutes()).padStart(2, '0')}`,
+          })
+          if (availabilityPlan.status === 'ready' && availabilityPlan.operation === 'set_availability') {
+            const dateLabel = availabilityPlan.dates.length === 1
+              ? (weekDays.find((day) => day.key === availabilityPlan.dates[0])?.label || availabilityPlan.dates[0])
+              : 'the planning week'
+            await persistConversation(
+              [...next, { role: 'model', text: `Got it—for ${dateLabel}, I’ll look for free time between ${formatTimeRange(availabilityPlan.window.startTime, availabilityPlan.window.endTime)}.` }],
+              { ...EMPTY_SCHEDULING_STATE, lastReferencedTaskId: schedulingState.lastReferencedTaskId, lastAction: schedulingState.lastAction },
+              nextProfile,
+              availabilityPlan.availability,
+            )
+            return
+          }
+          if (availabilityPlan.status === 'ready' && availabilityPlan.operation === 'schedule') {
+            await saveSlot(availabilityPlan.task, availabilityPlan.slot, {
+              ...EMPTY_SCHEDULING_STATE,
+              activeTaskId: availabilityPlan.task.id,
+              lastReferencedTaskId: availabilityPlan.task.id,
+              mode: availabilityPlan.task.date ? 'move' : 'schedule',
+            })
+            return
+          }
+          if (availabilityPlan.status === 'suggest') {
+            const pendingAction = createPendingAction(action, {
+              reason: 'choose_free_time',
+              missingFields: ['date', 'startTime', 'endTime'],
+            })
+            const choices = availabilityPlan.suggestions
+              .map((slot, index) => `${index + 1}) ${formatSlot(slot, weekDays)}`)
+              .join('; ')
+            await complete(
+              `I found these open times for “${availabilityPlan.task.title}”: ${choices}. Reply with the number you want, or give me another time.`,
+              {
+                ...pendingActionState(pendingAction, availabilityPlan.task.id),
+                activeTaskId: availabilityPlan.task.id,
+                mode: availabilityPlan.task.date ? 'move' : 'schedule',
+              },
+            )
+            return
+          }
+          if (availabilityPlan.status === 'clarify') {
+            if (availabilityPlan.reason === 'ambiguous_task') {
+              const pendingAction = createPendingAction(action, { reason: 'ambiguous_task', missingFields: ['task'] })
+              const choices = availabilityPlan.matches.slice(0, 4).map((task) => `“${task.title}”`).join(', ')
+              await complete(`I found more than one matching task: ${choices}. Which one should I find time for?`, pendingActionState(pendingAction))
+              return
+            }
+            if (availabilityPlan.reason === 'missing_task') {
+              const pendingAction = createPendingAction(action, { reason: 'missing_task', missingFields: ['task'] })
+              await complete('Which task should I find free time for?', pendingActionState(pendingAction))
+              return
+            }
+            if (availabilityPlan.reason === 'no_free_time') {
+              await complete(`I couldn’t find an open window for “${availabilityPlan.task.title}” in this planning week. Give me a day or a wider availability window.`, schedulingState)
+              return
+            }
+            if (availabilityPlan.reason === 'invalid_availability') {
+              await complete('That availability window is not valid. Tell me when your free time starts and ends.', schedulingState)
+              return
+            }
+            if (availabilityPlan.reason === 'missing_date') {
+              await complete('Which day should that availability apply to?', schedulingState)
+              return
+            }
+          }
+        }
+
+        if (contextSchedulingActionsEnabled() && (useContextScheduling || savedPendingAction)) {
+          const contextPlan = planContextSchedulingAction({ action, text, tasks, schedulingState, preliminary })
+          if (contextPlan.status === 'ready_many') {
+            await commitTaskOperation(user.uid, {
+              requestId: operationRequestId,
+              type: 'context-bulk-move',
+              description: `Moved ${contextPlan.updates.length} context-referenced tasks`,
+              changes: contextPlan.updates.map((item) => ({
+                kind: 'update',
+                taskId: item.taskId,
+                data: { date: item.date, source: 'user-directed-bulk-move' },
+              })),
+            })
+            const destination = weekDays.find((day) => day.key === contextPlan.date)?.label || contextPlan.date
+            const names = contextPlan.tasks.map((task) => `“${task.title}”`).join(', ')
+            await complete(`Done—I moved ${names} to ${destination} and kept their original times. You can say “undo” to move them back.`, {
+              ...EMPTY_SCHEDULING_STATE,
+              lastReferencedTaskId: contextPlan.tasks.at(-1)?.id || null,
+              lastAction: {
+                type: 'bulk-move',
+                moves: contextPlan.updates.map((item) => ({ taskId: item.taskId, previousDate: item.previousDate, date: item.date })),
+              },
+            })
+            return
+          }
+          if (contextPlan.status === 'unchanged_many') {
+            const destination = weekDays.find((day) => day.key === contextPlan.date)?.label || contextPlan.date
+            await complete(`Those ${contextPlan.tasks.length} tasks are already scheduled on ${destination}.`, {
+              ...EMPTY_SCHEDULING_STATE,
+              lastReferencedTaskId: contextPlan.tasks.at(-1)?.id || null,
+              lastAction: schedulingState.lastAction,
+            })
+            return
+          }
+          if (contextPlan.status === 'ready') {
+            await saveSlot(contextPlan.task, contextPlan.slot, {
+              ...EMPTY_SCHEDULING_STATE,
+              activeTaskId: contextPlan.task.id,
+              lastReferencedTaskId: contextPlan.task.id,
+              mode: contextPlan.task.date ? 'move' : 'schedule',
+            })
+            return
+          }
+          if (contextPlan.status === 'unchanged') {
+            await complete(`“${contextPlan.task.title}” is already scheduled ${formatSlot(contextPlan.slot, weekDays)}.`, {
+              ...EMPTY_SCHEDULING_STATE,
+              lastReferencedTaskId: contextPlan.task.id,
+              lastAction: schedulingState.lastAction,
+            })
+            return
+          }
+          if (contextPlan.status === 'clarify') {
+            const pendingAction = createPendingAction(action, {
+              reason: contextPlan.reason,
+              missingFields: contextPlan.reason === 'missing_date' ? ['date'] : contextPlan.reason === 'missing_time' ? ['startTime', 'endTime'] : ['task'],
+            })
+            const pendingState = {
+              ...pendingActionState(pendingAction, contextPlan.task?.id),
+              activeTaskId: contextPlan.task?.id || null,
+              mode: 'move',
+              date: contextPlan.date || preliminary.day?.key || action.patch.date || schedulingState.date || '',
+              startTime: preliminary.time?.startTime || action.patch.startTime || schedulingState.startTime || '',
+              endTime: preliminary.time?.endTime || action.patch.endTime || schedulingState.endTime || '',
+            }
+            if (contextPlan.reason === 'ambiguous_task') {
+              const choices = contextPlan.matches.slice(0, 4).map((task) => `“${task.title}”`).join(', ')
+              await complete(`I found more than one matching task: ${choices}. Which one do you mean?`, pendingState)
+            } else if (contextPlan.reason === 'ambiguous_day') {
+              await complete(`Did you mean ${contextPlan.choices.join(' or ')} for “${contextPlan.task.title}”?`, pendingState)
+            } else if (contextPlan.reason === 'missing_date' && contextPlan.tasks?.length) {
+              await complete(`What day should I move those ${contextPlan.tasks.length} tasks to?`, pendingState)
+            } else if (contextPlan.reason === 'missing_date') {
+              await complete(`What day should I move “${contextPlan.task.title}” to?`, pendingState)
+            } else if (contextPlan.reason === 'missing_time' && contextPlan.tasks?.length) {
+              await complete('One or more of those tasks has no saved time. Tell me the time you want to use.', pendingState)
+            } else if (contextPlan.reason === 'missing_time') {
+              await complete(`What time should I use for “${contextPlan.task.title}”?`, pendingState)
+            } else if (contextPlan.reason === 'invalid_time_shift' || contextPlan.reason === 'invalid_time') {
+              await complete(`That change would produce an invalid time. What exact time should I use for “${contextPlan.task.title}”?`, pendingState)
+            } else if (contextPlan.reason === 'bulk_conflict') {
+              await complete(`I didn’t move those tasks because “${contextPlan.conflict.left.title}” would overlap with “${contextPlan.conflict.right.title}”. Give me another day or move one of them first.`, pendingState)
+            } else {
+              await complete('Which task would you like to move?', pendingState)
+            }
+            return
+          }
+        }
+
+        if (contextTaskActionsEnabled() && (useContextTaskAction || savedPendingAction || forcedAction)) {
+          const taskPlan = planContextTaskAction({ action, tasks, schedulingState })
+          if (await handleContextTaskPlan(taskPlan, action)) return
+        }
+      }
+
       const creationRequest = parseTaskCreationIntent(text)
       const directSchedule = parseDirectScheduleRequest(text, tasks, weekDays, aiMemory.defaultDuration || 60)
-      const bulkMoveRequest = parseBulkMoveRequest(text)
       const namedTaskMoveRequest = parseNamedTaskMoveRequest(text, tasks, weekDays)
       const previousUserMessage = [...messages].reverse().find((message) => message.role === 'user')
       const previousCompletionRequest = parseTaskCompletionRequest(previousUserMessage?.text, weekDays)
@@ -1692,9 +2146,18 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
           await complete("I couldn't find those tasks, so I didn't delete anything.", { ...EMPTY_SCHEDULING_STATE })
           return
         }
-        await deleteTasks(user.uid, namedDeletionRequest.tasks.map((task) => task.id))
-        const taskNames = namedDeletionRequest.tasks.map((task) => `"${task.title}"`).join(' and ')
-        await complete(`Done! I deleted ${taskNames} from your tasks.`, { ...EMPTY_SCHEDULING_STATE })
+        const taskIds = namedDeletionRequest.tasks.map((task) => task.id)
+        const legacyDeleteAction = {
+          intent: 'delete_task',
+          scope: taskIds.length > 1 ? 'matching' : 'single',
+          target: { taskId: taskIds.length === 1 ? taskIds[0] : '', taskIds, query: '' },
+          patch: {},
+          constraints: {},
+          destructive: true,
+        }
+        const pendingAction = createPendingAction(legacyDeleteAction, { reason: 'confirm_delete', awaitingConfirmation: true })
+        const taskNames = namedDeletionRequest.tasks.map((task) => `“${task.title}”`).join(' and ')
+        await complete(`Delete ${taskNames} permanently from your tasks and calendar?`, pendingActionState(pendingAction, taskIds.length === 1 ? taskIds[0] : ''))
         return
       }
 
@@ -1799,7 +2262,16 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
           return
         }
 
-        await moveScheduledTasks(user.uid, bulkPlan.updates.map((item) => ({ taskId: item.taskId, date: item.date })))
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'bulk-move',
+          description: `Moved ${bulkPlan.updates.length} ${bulkPlan.updates.length === 1 ? 'task' : 'tasks'} between days`,
+          changes: bulkPlan.updates.map((item) => ({
+            kind: 'update',
+            taskId: item.taskId,
+            data: { date: item.date, source: 'user-directed-bulk-move' },
+          })),
+        })
         const movedDescriptions = bulkPlan.counts
           .filter((item) => item.count > 0)
           .map((item) => `${item.count} ${item.count === 1 ? 'task' : 'tasks'} from ${item.sourceLabel} to ${item.destinationLabel}`)
@@ -1847,7 +2319,16 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
           return
         }
 
-        await moveScheduledTasks(user.uid, namedMovePlan.updates.map((item) => ({ taskId: item.taskId, date: item.date })))
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: 'bulk-move',
+          description: `Moved ${namedMovePlan.updates.length} named ${namedMovePlan.updates.length === 1 ? 'task' : 'tasks'}`,
+          changes: namedMovePlan.updates.map((item) => ({
+            kind: 'update',
+            taskId: item.taskId,
+            data: { date: item.date, source: 'user-directed-bulk-move' },
+          })),
+        })
         const movedTaskIds = new Set(namedMovePlan.updates.map((item) => item.taskId))
         const movedNames = namedTaskMoveRequest.tasks.filter((task) => movedTaskIds.has(task.id)).map((task) => `“${task.title}”`)
         const alreadyThere = namedTaskMoveRequest.tasks.filter((task) => !movedTaskIds.has(task.id)).map((task) => `“${task.title}”`)
@@ -2149,8 +2630,16 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         }
 
         if (wantsFullCancellationRemoval(text)) {
-          await deleteTask(user.uid, canceledTask.id)
-          await complete(`Done—“${canceledTask.title}” was removed from your calendar and from What’s on my mind.`, { ...EMPTY_SCHEDULING_STATE })
+          const deleteAction = {
+            intent: 'delete_task',
+            scope: 'single',
+            target: { taskId: canceledTask.id, taskIds: [canceledTask.id], query: canceledTask.title },
+            patch: {},
+            constraints: {},
+            destructive: true,
+          }
+          const pendingAction = createPendingAction(deleteAction, { reason: 'confirm_delete', awaitingConfirmation: true })
+          await complete(`Delete “${canceledTask.title}” permanently from your tasks and calendar?`, pendingActionState(pendingAction, canceledTask.id))
           return
         }
 
@@ -2200,7 +2689,23 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         return
       }
 
-      if (/^undo[.!\s]*$/i.test(text) && schedulingState.lastAction) {
+      if (/^undo(?:\s+that)?[.!\s]*$/i.test(text)) {
+        try {
+          const operation = await undoLastTaskOperation(user.uid)
+          const count = operation.changes.length
+          const description = operation.description ? operation.description.charAt(0).toLowerCase() + operation.description.slice(1) : `${count} ${count === 1 ? 'task change' : 'task changes'}`
+          await complete(`Undone—I reversed ${description}.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        } catch (error) {
+          if (error?.code === 'operation/undo-conflict') {
+            await complete(error.message, { ...EMPTY_SCHEDULING_STATE, lastReferencedTaskId: schedulingState.lastReferencedTaskId })
+            return
+          }
+          if (error?.code !== 'operation/nothing-to-undo') throw error
+        }
+      }
+
+      if (/^undo(?:\s+that)?[.!\s]*$/i.test(text) && schedulingState.lastAction) {
         const action = schedulingState.lastAction
         if (action.type === 'bulk-completion' && Array.isArray(action.taskIds) && action.taskIds.length) {
           await setTasksCompleted(user.uid, action.taskIds, Boolean(action.previousCompleted))
@@ -2222,6 +2727,11 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         await complete(action.previousSlot
           ? `Undone—“${task.title}” is back at ${formatSlot(action.previousSlot, weekDays)}.`
           : `Undone—“${task.title}” is unscheduled again.`, { ...EMPTY_SCHEDULING_STATE })
+        return
+      }
+
+      if (/^undo(?:\s+that)?[.!\s]*$/i.test(text)) {
+        await complete('There is no recent task change to undo.', { ...EMPTY_SCHEDULING_STATE })
         return
       }
 
@@ -2371,19 +2881,19 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         return
       }
 
-      const scopeResponse = getConversationScopeResponse(text)
+      const scopeResponse = getConversationScopeResponse(text, { assistantName: aiMemory.chatbotName, tasks, prefersConcise: nextProfile.prefersConcise })
       if (scopeResponse) {
         await complete(scopeResponse, { ...EMPTY_SCHEDULING_STATE })
         return
       }
 
       const history = normalizedGeminiHistory(messages)
+      consumeAiRequestBudget(user.uid)
       const response = await askPlanningAssistant({ message: text, history, tasks, memory: aiMemory, planningDates, availability, currentDate: localDateKey(new Date()), interactionProfile: nextProfile })
       const correctedResponse = stopRepeatedPriorityPrompt(response, tasks, text)
       const plan = validatePlanningResponse(correctedResponse, tasks, planningDates, availability)
-      setAvailability(plan.availability)
       const hasActions = plan.taskUpdates.length > 0 || plan.scheduleProposal.length > 0
-      await persistConversation([...next, { role: 'model', text: correctedResponse.message, ...(hasActions ? { plan } : {}) }], schedulingState, nextProfile)
+      await persistConversation([...next, { role: 'model', text: correctedResponse.message, ...(hasActions ? { plan } : {}) }], schedulingState, nextProfile, plan.availability)
     } catch (error) {
       console.error('SchedMe AI request failed', error)
       setChatError(error?.code ? explainAiError(error) : error?.message || 'SchedMe could not complete that request. Please try again.')
@@ -2396,7 +2906,32 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setPlanError('')
     try {
       const checkedPlan = validatePlanningResponse(plan, tasks, planningDates, availability)
-      await applyAiPlanning(user.uid, checkedPlan.taskUpdates, checkedPlan.scheduleProposal)
+      const changesByTask = new Map()
+      checkedPlan.taskUpdates.forEach((item) => {
+        changesByTask.set(item.taskId, {
+          urgent: item.urgent,
+          important: item.important,
+          category: item.urgent ? 'urgent' : item.important ? 'important' : 'notUrgent',
+          source: 'user-approved-ai-plan',
+        })
+      })
+      checkedPlan.scheduleProposal.forEach((item) => {
+        changesByTask.set(item.taskId, {
+          ...(changesByTask.get(item.taskId) || {}),
+          date: item.date,
+          startTime: item.startTime,
+          endTime: item.endTime,
+          source: 'user-approved-ai-plan',
+        })
+      })
+      if (changesByTask.size) {
+        await commitTaskOperation(user.uid, {
+          requestId: newOperationRequestId('plan'),
+          type: 'apply-ai-plan',
+          description: `Applied an AI plan to ${changesByTask.size} ${changesByTask.size === 1 ? 'task' : 'tasks'}`,
+          changes: [...changesByTask].map(([taskId, data]) => ({ kind: 'update', taskId, data })),
+        })
+      }
       const updatedMessages = messages.map((item, index) => index === messageIndex ? { ...item, planApplied: true } : item)
       await persistConversation(updatedMessages, schedulingState, interactionProfile)
     } catch (error) {

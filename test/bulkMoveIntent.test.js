@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseBulkMoveRequest, planBulkTaskMoves } from '../src/ai/schedulingIntent.js'
+import { parseBulkMoveRequest, parseConversationalBulkMoveRequest, planBulkTaskMoves } from '../src/ai/schedulingIntent.js'
 
 test('parses chained all-task day moves with an explicit calendar date', () => {
   const now = new Date(2026, 9, 24, 9)
@@ -34,6 +34,36 @@ test('treats a singular day-qualified task as every task scheduled on that day',
     request.moves.map(({ sourceDate, destinationDate }) => ({ sourceDate, destinationDate })),
     [{ sourceDate: '2026-10-24', destinationDate: '2026-10-25' }],
   )
+})
+
+test('keeps the original day move when the user answers a task clarification with all', () => {
+  const now = new Date(2026, 9, 28, 9)
+  const request = parseConversationalBulkMoveRequest('all', [
+    { role: 'user', text: 'move thy thursday task on wednesday' },
+    { role: 'model', text: 'Which scheduled task would you like to move?' },
+  ], now)
+
+  assert.equal(request.isBulk, true)
+  assert.equal(request.moves[0].sourceLabel, 'Thursday')
+  assert.equal(request.moves[0].destinationLabel, 'Wednesday')
+})
+
+test('does not reinterpret an unrelated standalone all as a calendar move', () => {
+  const request = parseConversationalBulkMoveRequest('all', [
+    { role: 'user', text: 'Which tasks are urgent?' },
+    { role: 'model', text: 'You have three urgent tasks.' },
+  ], new Date(2026, 9, 28, 9))
+  assert.equal(request.isBulk, false)
+})
+
+test('does not revive an old move clarification after a newer conversation', () => {
+  const request = parseConversationalBulkMoveRequest('all', [
+    { role: 'user', text: 'move Thursday tasks on Wednesday' },
+    { role: 'model', text: 'Which scheduled task would you like to move?' },
+    { role: 'user', text: 'never mind' },
+    { role: 'model', text: 'Okay, I canceled that request.' },
+  ], new Date(2026, 9, 28, 9))
+  assert.equal(request.isBulk, false)
 })
 
 test('parses an explicit source date before task and an on destination', () => {

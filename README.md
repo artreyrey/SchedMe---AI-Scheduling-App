@@ -69,8 +69,23 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=
 VITE_FIREBASE_APP_ID=
 VITE_FIREBASE_MEASUREMENT_ID=
 VITE_GEMINI_MODEL=gemini-3.5-flash-lite
+VITE_AI_INTENT_SHADOW_MODE=false
+VITE_AI_CONTEXT_ACTIONS_ENABLED=true
+VITE_AI_CONTEXT_TASK_ACTIONS_ENABLED=true
+VITE_AI_MINUTE_REQUEST_LIMIT=6
+VITE_AI_DAILY_REQUEST_LIMIT=15
 VITE_FIREBASE_RECAPTCHA_ENTERPRISE_KEY=
 ```
+
+`VITE_AI_INTENT_SHADOW_MODE=true` logs normalized action predictions in the browser console for development. It does not enable any additional executable action types; execution is controlled separately by the context-action feature flags.
+
+`VITE_AI_CONTEXT_ACTIONS_ENABLED=true` enables context-aware single-task scheduling, moves, saved availability, and conflict-free time suggestions. Gemini interprets the request, while deterministic application code resolves the task, preserves omitted fields, validates the date and time, checks conflicts, and performs an authenticated Firestore transaction. Set it to `false` for an immediate fallback to the original parser.
+
+`VITE_AI_CONTEXT_TASK_ACTIONS_ENABLED=true` enables context-aware task creation, completion, reopening, priority and color changes, unscheduling, and confirmed deletion. Clarifications are stored for up to 30 minutes so a short follow-up can finish the same action after a reload. Destructive deletion always requires an explicit yes/no confirmation.
+
+The AI request limits protect the shared Gemini free-tier quota in each browser. Exact compact commands and manual calendar controls remain available when the local AI allowance is exhausted.
+
+Assistant task changes and approved AI plans are recorded as atomic operation documents. Repeating the same operation request is idempotent, and `undo` walks the operation stack one action at a time. Undo stops instead of overwriting a task that was edited after the recorded action.
 
 Variables prefixed with `VITE_` are embedded in the browser bundle. Firebase web configuration identifies the Firebase project but does not replace authorization. Protect user data with Firebase Authentication, restrictive Firestore rules, App Check, API restrictions, and usage quotas.
 
@@ -84,7 +99,7 @@ npm run build
 npm run preview
 ```
 
-The automated tests cover scheduling formats, task creation, conflicts, cancellation, completion, conversation behavior, calendar editing, drag-and-drop placement, and saved themes.
+The automated tests cover scheduling formats, task creation, conflicts, cancellation, completion, context-aware conversation sequences, availability and free-time selection, operation-history safety, calendar editing, drag-and-drop placement, and saved themes.
 
 ## Deployment
 

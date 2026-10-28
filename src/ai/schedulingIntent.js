@@ -236,6 +236,20 @@ export function parseBulkMoveRequest(value, now = new Date()) {
   return { isBulk: true, moves, invalidClauses }
 }
 
+export function parseConversationalBulkMoveRequest(value, messages = [], now = new Date()) {
+  const direct = parseBulkMoveRequest(value, now)
+  if (direct.isBulk) return direct
+  if (!/^\s*(?:all|all of them|every one|every task|all tasks?)\s*[.!]?\s*$/i.test(String(value || ''))) return direct
+
+  const recent = [...(Array.isArray(messages) ? messages : [])].reverse()
+  const latestMessage = recent.find((message) => message?.kind !== 'daily-greeting')
+  if (latestMessage?.role !== 'model'
+    || !/which\s+(?:scheduled\s+)?tasks?\s+(?:would\s+you\s+like|do\s+you\s+want)\s+to\s+move/i.test(String(latestMessage.text || ''))) return direct
+  const latestIndex = recent.indexOf(latestMessage)
+  const originalRequest = recent.slice(latestIndex + 1).find((message) => message?.role === 'user')
+  return originalRequest ? parseBulkMoveRequest(originalRequest.text, now) : direct
+}
+
 function tasksOverlap(left, right) {
   const leftStart = minutes(left.startTime)
   const leftEnd = minutes(left.endTime)
