@@ -810,6 +810,104 @@ function MicrophonePermissionModal({ blocked, onCancel, onContinue }) {
   </div>
 }
 
+function AssistantGuide({ assistantName }) {
+  return <div className="schedme-assistant-guide-content">
+    <div className="schedme-assistant-guide-intro">
+      <p className="dashboard-kicker">A quick, friendly guide</p>
+      <h2 id="schedme-assistant-guide-title">How to plan with {assistantName}</h2>
+      <p>{assistantName} turns everyday language into task and calendar changes. You do not need special commands—just say what you want to happen and include the task, day, or time when it matters.</p>
+    </div>
+
+    <section className="schedme-guide-section">
+      <h3>What is the AI for?</h3>
+      <p>Use it as a planning companion when you want to get something out of your head, organize it, or make a schedule change without editing every field yourself.</p>
+      <p>It can use your task names, scheduled dates and times, completion status, categories, saved availability, preferences, and recent conversation to understand follow-ups such as “move it to Friday.”</p>
+    </section>
+
+    <section className="schedme-guide-section">
+      <h3>What can it do?</h3>
+      <ul className="schedme-guide-capabilities">
+        <li><strong>Create and schedule:</strong> add a task, then give it a day and time.</li>
+        <li><strong>Move and adjust:</strong> reschedule one task or a whole day, or change only the time.</li>
+        <li><strong>Track progress:</strong> mark one or several tasks as done or not done.</li>
+        <li><strong>Organize:</strong> change priorities, categories, and task colors.</li>
+        <li><strong>Plan around your day:</strong> find free time and avoid schedule conflicts.</li>
+        <li><strong>Remove safely:</strong> take a task off the calendar or permanently delete it after confirmation.</li>
+        <li><strong>Correct mistakes:</strong> clarify a request, cancel a pending change, or say “undo.”</li>
+      </ul>
+    </section>
+
+    <section className="schedme-guide-section schedme-guide-tip">
+      <h3>The easiest way to ask</h3>
+      <p>Start with the action, use the task name shown in SchedMe, then add the date and time you want.</p>
+      <div className="schedme-guide-formula" aria-label="Prompt formula"><span>Action</span><i>+</i><span>Task</span><i>+</i><span>Day</span><i>+</i><span>Time</span></div>
+      <p className="schedme-guide-example">“Schedule Thesis Writing on Monday from 2 PM to 4 PM.”</p>
+      <small>If two tasks have similar names or a date could mean more than one year, be more specific. {assistantName} will ask instead of guessing when it is unsure.</small>
+    </section>
+
+    <section className="schedme-guide-section">
+      <h3>Example commands</h3>
+      <div className="schedme-guide-command-group">
+        <h4>Create and schedule</h4>
+        <p>“Add a task called Finish presentation.”</p>
+        <p>“Schedule Finish presentation tomorrow at 3 PM.”</p>
+        <p>“Find free time for my thesis this week.”</p>
+      </div>
+      <div className="schedme-guide-command-group">
+        <h4>Move or change time</h4>
+        <p>“Move Practice Drawing to Wednesday.”</p>
+        <p>“Change Thesis Writing to 7 PM.”</p>
+        <p>“Move all Tuesday tasks to Thursday.”</p>
+        <p>“Keep the same time, but move it to Monday.”</p>
+      </div>
+      <div className="schedme-guide-command-group">
+        <h4>Finish and organize</h4>
+        <p>“Mark Research and Presentation as done.”</p>
+        <p>“Mark all Monday tasks as not done.”</p>
+        <p>“Make Thesis Writing urgent.”</p>
+        <p>“Change Presentation to blue.”</p>
+      </div>
+      <div className="schedme-guide-command-group">
+        <h4>Remove or delete</h4>
+        <p>“Remove Thesis Writing from my calendar.”</p>
+        <p>“Delete Thesis Writing.”</p>
+        <p>“Delete all my tasks on October 27.”</p>
+      </div>
+    </section>
+
+    <section className="schedme-guide-section schedme-guide-notice">
+      <h3>Remove and delete mean different things</h3>
+      <p><strong>Remove from calendar</strong> keeps the task and only clears its date and time.</p>
+      <p><strong>Delete</strong> permanently removes the task after you answer yes to the confirmation. A single assistant action can update or delete up to 20 tasks.</p>
+    </section>
+
+    <section className="schedme-guide-section">
+      <h3>How do I check my allowance?</h3>
+      <p>Ask “How many AI requests do I have left?”, “How many tokens are left?”, or “Show my Gemini usage.”</p>
+      <p>{assistantName} will show today’s requests used and remaining, tokens processed, and cached tokens. It also warns you when 30, 20, or 10 requests remain.</p>
+      <small>Google does not provide a fixed free-token balance. Your remaining SchedMe AI requests are the reliable allowance; token numbers describe what has already been processed.</small>
+    </section>
+
+    <section className="schedme-guide-section schedme-guide-local">
+      <h3>What still works when the AI allowance is gone?</h3>
+      <p>Clear commands that SchedMe can handle directly do not spend a Gemini request. Try:</p>
+      <div className="schedme-guide-command-group">
+        <p>“How many AI requests are left?”</p>
+        <p>“Move Thesis Writing to Wednesday.”</p>
+        <p>“Change Thesis Writing to 7 PM.”</p>
+        <p>“Move all Monday tasks to Tuesday.”</p>
+        <p>“Mark Thesis Writing as done.”</p>
+        <p>“Mark Thesis Writing as not done.”</p>
+        <p>“Delete all my tasks on October 27.”</p>
+        <p>“Undo.”</p>
+      </div>
+      <small>More conversational or ambiguous requests may need Gemini. If one cannot be understood, try again with a clear action, exact task name, and specific date or time.</small>
+    </section>
+
+    <p className="schedme-guide-ending">You can speak naturally, correct yourself, and answer follow-up questions. {assistantName} is here to make planning feel lighter—not to make you learn a command language.</p>
+  </div>
+}
+
 function FloatingAssistant({
   assistantName,
   assistantMood,
@@ -829,6 +927,8 @@ function FloatingAssistant({
 }) {
   const [open, setOpen] = useState(false)
   const [popupMounted, setPopupMounted] = useState(false)
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideMounted, setGuideMounted] = useState(false)
   const [dragPoint, setDragPoint] = useState(null)
   const [settling, setSettling] = useState(false)
   const [settleTilt, setSettleTilt] = useState(0)
@@ -849,6 +949,8 @@ function FloatingAssistant({
   const [lastSeenModelCount, setLastSeenModelCount] = useState(() => messages.filter((message) => message.role === 'model').length)
   const rootRef = useRef(null)
   const transcriptRef = useRef(null)
+  const guideRef = useRef(null)
+  const guideButtonRef = useRef(null)
   const dragRef = useRef(null)
   const suppressClickRef = useRef(false)
   const modelMessageCount = messages.filter((message) => message.role === 'model').length
@@ -891,13 +993,27 @@ function FloatingAssistant({
   }, [open, popupMounted])
 
   useEffect(() => {
+    if (guideOpen) {
+      setGuideMounted(true)
+      return undefined
+    }
+    if (!guideMounted) return undefined
+    const closeTimer = window.setTimeout(() => setGuideMounted(false), 200)
+    return () => window.clearTimeout(closeTimer)
+  }, [guideOpen, guideMounted])
+
+  useEffect(() => {
+    if (!open) setGuideOpen(false)
+  }, [open])
+
+  useEffect(() => {
     if (!settling) return undefined
     const settleTimer = window.setTimeout(() => setSettling(false), 440)
     return () => window.clearTimeout(settleTimer)
   }, [settling])
 
   useLayoutEffect(() => {
-    if (!open || !popupMounted) return undefined
+    if (!open || !popupMounted || guideOpen) return undefined
     let secondFrame = 0
     const scrollToLatest = () => {
       const transcript = transcriptRef.current
@@ -912,16 +1028,25 @@ function FloatingAssistant({
       window.cancelAnimationFrame(firstFrame)
       if (secondFrame) window.cancelAnimationFrame(secondFrame)
     }
-  }, [open, popupMounted, messages.length, chatBusy])
+  }, [open, popupMounted, guideOpen, messages.length, chatBusy])
 
   useEffect(() => {
     if (!open) return undefined
     setLastSeenModelCount(modelMessageCount)
     function closeOutside(event) {
-      if (!rootRef.current?.contains(event.target)) setOpen(false)
+      const insideRoot = rootRef.current?.contains(event.target)
+      if (guideOpen) {
+        const insideGuide = guideRef.current?.contains(event.target)
+        const insideGuideButton = guideButtonRef.current?.contains(event.target)
+        if (!insideGuide && !insideGuideButton) setGuideOpen(false)
+        if (!insideRoot) return
+      }
+      if (!insideRoot) setOpen(false)
     }
     function closeOnEscape(event) {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key !== 'Escape') return
+      if (guideOpen) setGuideOpen(false)
+      else setOpen(false)
     }
     document.addEventListener('pointerdown', closeOutside)
     document.addEventListener('keydown', closeOnEscape)
@@ -929,7 +1054,7 @@ function FloatingAssistant({
       document.removeEventListener('pointerdown', closeOutside)
       document.removeEventListener('keydown', closeOnEscape)
     }
-  }, [open, modelMessageCount])
+  }, [open, guideOpen, modelMessageCount])
 
   function beginDrag(event) {
     if (event.button !== 0) return
@@ -1003,24 +1128,31 @@ function FloatingAssistant({
     {popupMounted && <section className={`schedme-chat-popup ${open ? 'is-opening' : 'is-closing'}`} style={popupStyle} role="dialog" aria-modal="false" aria-label={`Chat with ${assistantName}`}>
       <header className="schedme-chat-popup-header">
         <span className="schedme-chat-popup-avatar" aria-hidden="true">{assistantName.charAt(0).toUpperCase()}</span>
-        <div><strong>{assistantName}</strong><small>{assistantMood} planning companion</small></div>
-        <button type="button" onClick={() => setOpen(false)} aria-label="Close SchedMe chat">×</button>
+        <div className="schedme-chat-popup-identity"><strong>{assistantName}</strong><small>{assistantMood} planning companion</small></div>
+        <div className="schedme-chat-popup-actions">
+          <button ref={guideButtonRef} type="button" className={guideOpen ? 'is-active' : ''} onClick={() => setGuideOpen((current) => !current)} aria-expanded={guideOpen} aria-controls="schedme-assistant-guide" aria-label={guideOpen ? `Close ${assistantName} guide` : `Open ${assistantName} guide`} title="How to use SchedMe AI">?</button>
+          <button type="button" onClick={() => setOpen(false)} aria-label="Close SchedMe chat">×</button>
+        </div>
       </header>
-      <div className="schedme-chat-popup-transcript ai-chat-transcript" ref={transcriptRef} aria-live="polite">
-        {messages.map((message, index) => <div className={`ai-chat-message ${message.role}`} key={`floating-${index}-${message.role}`}>
-          <span className="ai-message-avatar" aria-hidden="true">{message.role === 'model' ? assistantName.charAt(0).toUpperCase() : (userName || 'Y').charAt(0).toUpperCase()}</span>
-          <div className="ai-chat-bubble">
-            {message.kind === 'voice' ? <VoiceMessage duration={message.voiceDurationSeconds} src={getVoiceUrl(message.voiceId)} transcript={message.text} /> : <p>{message.text}</p>}
-            {message.role === 'model' && message.plan && <PlanReview plan={message.plan} tasks={tasks} onApply={() => onApplyPlan(message.plan, index)} busy={planBusy} applied={message.planApplied} error={planError} />}
+      {guideMounted
+        ? <section id="schedme-assistant-guide" className={`schedme-assistant-guide ${guideOpen ? 'is-opening' : 'is-closing'}`} ref={guideRef} role="region" aria-labelledby="schedme-assistant-guide-title"><AssistantGuide assistantName={assistantName} /></section>
+        : <>
+          <div className="schedme-chat-popup-transcript ai-chat-transcript" ref={transcriptRef} aria-live="polite">
+            {messages.map((message, index) => <div className={`ai-chat-message ${message.role}`} key={`floating-${index}-${message.role}`}>
+              <span className="ai-message-avatar" aria-hidden="true">{message.role === 'model' ? assistantName.charAt(0).toUpperCase() : (userName || 'Y').charAt(0).toUpperCase()}</span>
+              <div className="ai-chat-bubble">
+                {message.kind === 'voice' ? <VoiceMessage duration={message.voiceDurationSeconds} src={getVoiceUrl(message.voiceId)} transcript={message.text} /> : <p>{message.text}</p>}
+                {message.role === 'model' && message.plan && <PlanReview plan={message.plan} tasks={tasks} onApply={() => onApplyPlan(message.plan, index)} busy={planBusy} applied={message.planApplied} error={planError} />}
+              </div>
+            </div>)}
+            {chatBusy && <p className="ai-thinking">Thinking…</p>}
           </div>
-        </div>)}
-        {chatBusy && <p className="ai-thinking">Thinking…</p>}
-      </div>
-      <form className="schedme-chat-popup-composer" onSubmit={onSend}>
-        <input aria-label={`Message ${assistantName}`} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask SchedMe to move or plan tasks…" maxLength={2000} />
-        <button type="submit" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button>
-      </form>
-      {chatError && <p className="schedme-chat-popup-error" role="alert">{chatError}</p>}
+          <form className="schedme-chat-popup-composer" onSubmit={onSend}>
+            <input aria-label={`Message ${assistantName}`} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask SchedMe to move or plan tasks…" maxLength={2000} />
+            <button type="submit" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button>
+          </form>
+          {chatError && <p className="schedme-chat-popup-error" role="alert">{chatError}</p>}
+        </>}
     </section>}
     <button
       type="button"

@@ -3020,10 +3020,13 @@ button:not(:disabled):active,
 .schedme-chat-popup.is-closing { pointer-events: none; animation: schedme-chat-popup-out 210ms cubic-bezier(.4,0,.7,.2) both; }
 .schedme-chat-popup-header { display: flex; min-height: 4.15rem; align-items: center; gap: .68rem; padding: .72rem .75rem; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-soft) 82%, transparent); }
 .schedme-chat-popup-avatar { display: grid; width: 2.35rem; height: 2.35rem; flex: 0 0 auto; place-items: center; border-radius: .8rem; background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent-deep)); color: var(--schedme-mark-ink); box-shadow: inset 0 1px 0 rgba(255,255,255,.28); font-weight: 800; }
-.schedme-chat-popup-header > div { display: grid; min-width: 0; flex: 1; gap: .08rem; }
+.schedme-chat-popup-identity { display: grid; min-width: 0; flex: 1; gap: .08rem; }
 .schedme-chat-popup-header strong { overflow: hidden; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
 .schedme-chat-popup-header small { color: var(--subtle); font-size: .6rem; }
-.schedme-chat-popup-header > button { display: grid; width: 1.9rem; height: 1.9rem; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); color: var(--muted); font: inherit; font-size: 1.1rem; cursor: pointer; }
+.schedme-chat-popup-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .4rem; }
+.schedme-chat-popup-actions button { display: grid; width: 1.9rem; height: 1.9rem; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); color: var(--muted); font: inherit; font-size: 1.1rem; cursor: pointer; transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease; }
+.schedme-chat-popup-actions button:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); color: var(--accent-deep); transform: translateY(-1px); }
+.schedme-chat-popup-actions button.is-active { border-color: color-mix(in srgb, var(--accent) 64%, var(--line)); background: color-mix(in srgb, var(--accent) 13%, var(--surface)); color: var(--accent-deep); }
 .schedme-chat-popup-transcript.ai-chat-transcript { min-height: 0; max-height: none; flex: 1; margin: 0; padding: .85rem .75rem; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .schedme-chat-popup-transcript .ai-chat-bubble { max-width: 86%; }
 .schedme-chat-popup-transcript .ai-chat-message p { font-size: .7rem; }
@@ -3034,10 +3037,40 @@ button:not(:disabled):active,
 .schedme-chat-popup-composer button { display: grid; width: 2rem; height: 2rem; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: .68rem; background: var(--accent); color: var(--canvas); font: inherit; font-size: 1rem; font-weight: 800; cursor: pointer; }
 .schedme-chat-popup-composer button:disabled { cursor: wait; opacity: .5; }
 .schedme-chat-popup-error { margin: -.25rem .8rem .65rem; color: #ce624d; font-size: .62rem; line-height: 1.4; }
+.schedme-assistant-guide { min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; padding: 1rem .9rem 1.25rem; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--accent) 40%, var(--line)) transparent; }
+.schedme-assistant-guide.is-opening { animation: schedme-guide-in 280ms cubic-bezier(.16,1,.3,1) both; }
+.schedme-assistant-guide.is-closing { pointer-events: none; animation: schedme-guide-out 190ms cubic-bezier(.4,0,.7,.2) both; }
+.schedme-assistant-guide-content { display: grid; gap: .75rem; }
+.schedme-assistant-guide-intro { padding: .2rem .08rem .3rem; }
+.schedme-assistant-guide-intro .dashboard-kicker { margin: 0 0 .25rem; font-size: .58rem; }
+.schedme-assistant-guide-intro h2 { margin: 0; color: var(--ink); font-size: 1.12rem; line-height: 1.2; }
+.schedme-assistant-guide-intro > p:last-child { margin: .55rem 0 0; color: var(--muted); font-size: .69rem; line-height: 1.62; }
+.schedme-guide-section { padding: .8rem; border: 1px solid color-mix(in srgb, var(--line) 90%, transparent); border-radius: .92rem; background: color-mix(in srgb, var(--surface-soft) 76%, transparent); }
+.schedme-guide-section h3 { margin: 0 0 .45rem; color: var(--ink); font-size: .78rem; line-height: 1.35; }
+.schedme-guide-section h4 { margin: 0 0 .3rem; color: var(--accent-deep); font-size: .64rem; letter-spacing: .01em; }
+.schedme-guide-section p, .schedme-guide-section li { color: var(--muted); font-size: .66rem; line-height: 1.58; }
+.schedme-guide-section p { margin: .36rem 0 0; }
+.schedme-guide-section p:first-of-type { margin-top: 0; }
+.schedme-guide-section strong { color: var(--ink); font-weight: 700; }
+.schedme-guide-section small { display: block; margin-top: .55rem; color: var(--subtle); font-size: .59rem; line-height: 1.55; }
+.schedme-guide-capabilities { display: grid; gap: .38rem; margin: 0; padding-left: 1.05rem; }
+.schedme-guide-tip { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, var(--surface-soft)); }
+.schedme-guide-formula { display: flex; flex-wrap: wrap; align-items: center; gap: .28rem; margin: .62rem 0; }
+.schedme-guide-formula span { padding: .28rem .44rem; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: .48rem; background: var(--surface); color: var(--ink); font-size: .58rem; font-weight: 700; }
+.schedme-guide-formula i { color: var(--subtle); font-size: .58rem; font-style: normal; }
+.schedme-guide-example { padding: .55rem .62rem; border-left: 2px solid var(--accent); border-radius: .18rem .58rem .58rem .18rem; background: color-mix(in srgb, var(--surface) 86%, transparent); color: var(--ink) !important; }
+.schedme-guide-command-group { display: grid; gap: .25rem; margin-top: .65rem; }
+.schedme-guide-command-group:first-of-type { margin-top: .1rem; }
+.schedme-guide-command-group p { margin: 0; padding: .4rem .52rem; border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: .55rem; background: color-mix(in srgb, var(--surface) 84%, transparent); color: var(--ink); }
+.schedme-guide-notice { border-color: color-mix(in srgb, #d68c62 34%, var(--line)); background: color-mix(in srgb, #d68c62 7%, var(--surface-soft)); }
+.schedme-guide-local { border-color: color-mix(in srgb, #5eaa86 34%, var(--line)); background: color-mix(in srgb, #5eaa86 7%, var(--surface-soft)); }
+.schedme-guide-ending { margin: .05rem .25rem .35rem; color: var(--muted); font-size: .64rem; line-height: 1.6; text-align: center; }
 @keyframes schedme-chathead-pulse { 0% { opacity: .72; transform: scale(.84); } 72%, 100% { opacity: 0; transform: scale(1.38); } }
 @keyframes schedme-chathead-settle { 0% { transform: scale(1.12) rotate(var(--schedme-chathead-tilt)); } 52% { transform: scale(.96) rotate(-1.5deg); } 76% { transform: scale(1.025) rotate(.6deg); } 100% { transform: scale(1) rotate(0); } }
 @keyframes schedme-chat-popup-in { from { opacity: 0; filter: blur(5px); transform: translate3d(var(--schedme-popup-shift), 10px, 0) scale(.93); } 70% { opacity: 1; filter: blur(0); transform: translate3d(-2px, -1px, 0) scale(1.008); } to { opacity: 1; filter: blur(0); transform: translate3d(0, 0, 0) scale(1); } }
 @keyframes schedme-chat-popup-out { from { opacity: 1; filter: blur(0); transform: translate3d(0, 0, 0) scale(1); } to { opacity: 0; filter: blur(4px); transform: translate3d(var(--schedme-popup-shift), 8px, 0) scale(.95); } }
+@keyframes schedme-guide-in { from { opacity: 0; transform: translate3d(0, -8px, 0) scale(.985); } to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } }
+@keyframes schedme-guide-out { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: 0; transform: translate3d(0, -6px, 0) scale(.99); } }
 
 @media (max-width: 520px) {
   .schedme-chat-popup { right: .75rem !important; left: .75rem !important; width: auto; }
@@ -3047,7 +3080,8 @@ button:not(:disabled):active,
 @media (prefers-reduced-motion: reduce) {
   .schedme-chathead::before,
   .schedme-chathead.is-settling,
-  .schedme-chat-popup { animation-duration: 1ms !important; }
+  .schedme-chat-popup,
+  .schedme-assistant-guide { animation-duration: 1ms !important; }
   .schedme-chathead,
   .schedme-chathead > span { transition-duration: 1ms !important; }
 }
