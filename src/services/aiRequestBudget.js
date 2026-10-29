@@ -1,5 +1,10 @@
 const memoryStore = new Map()
 
+export const DEFAULT_AI_REQUEST_LIMITS = Object.freeze({
+  minuteLimit: 10,
+  dailyLimit: 50,
+})
+
 function configuredLimit(name, fallback) {
   const value = Number(import.meta.env?.[name])
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
@@ -31,8 +36,8 @@ function budgetError(code, message, retryAfterMs) {
 }
 
 export function consumeAiRequestBudget(uid, now = Date.now(), limits = {}) {
-  const minuteLimit = limits.minuteLimit || configuredLimit('VITE_AI_MINUTE_REQUEST_LIMIT', 6)
-  const dailyLimit = limits.dailyLimit || configuredLimit('VITE_AI_DAILY_REQUEST_LIMIT', 15)
+  const minuteLimit = limits.minuteLimit || configuredLimit('VITE_AI_MINUTE_REQUEST_LIMIT', DEFAULT_AI_REQUEST_LIMITS.minuteLimit)
+  const dailyLimit = limits.dailyLimit || configuredLimit('VITE_AI_DAILY_REQUEST_LIMIT', DEFAULT_AI_REQUEST_LIMITS.dailyLimit)
   const dayStart = new Date(now)
   dayStart.setHours(0, 0, 0, 0)
   const requests = readUsage(uid).filter((timestamp) => timestamp >= dayStart.getTime() && timestamp <= now)

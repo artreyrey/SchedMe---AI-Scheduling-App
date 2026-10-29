@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { clearAiRequestBudgetForTests, consumeAiRequestBudget } from '../src/services/aiRequestBudget.js'
+import { clearAiRequestBudgetForTests, consumeAiRequestBudget, DEFAULT_AI_REQUEST_LIMITS } from '../src/services/aiRequestBudget.js'
+
+test('uses the expanded default SchedMe AI allowance', () => {
+  assert.deepEqual(DEFAULT_AI_REQUEST_LIMITS, { minuteLimit: 10, dailyLimit: 50 })
+})
 
 test('enforces per-minute AI request limits', () => {
   const uid = 'minute-user'
