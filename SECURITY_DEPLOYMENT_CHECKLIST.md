@@ -14,11 +14,11 @@ These settings are intentionally not automated because they change project-wide 
 - In **Firebase Console → AI Services → AI Logic → Settings**, enforce **Authenticated users** mode.
 - In **Google Cloud Console → Firebase AI Logic API → Quotas & System Limits**, set a per-user generate-content limit appropriate for the app. Start at **10 requests per minute per region**, matching SchedMe's local guide, then adjust from real usage.
 - Confirm **Email/Password** and **Google** are the only intended Firebase Authentication providers.
-- Add the final production hostname to Firebase Authentication's authorized domains and to the email-verification continue URL allowlist.
+- Add `schedme.vercel.app` to Firebase Authentication's authorized domains and to the email-verification continue URL allowlist.
 
 ## API key and hosting
 
-- Once the final hostname is known, add HTTP-referrer restrictions for that exact HTTPS origin to the production browser API key. Keep Firebase's API restrictions and verify every API used by Authentication, Firestore, App Check, Analytics, and Firebase AI Logic remains allowed.
+- Restrict the production browser API key to the `https://schedme.vercel.app/*` HTTP referrer. Keep Firebase's API restrictions and verify every API used by Authentication, Firestore, App Check, Analytics, and Firebase AI Logic remains allowed.
 - Keep separate development and production environment values. Never commit `.env` files.
 - Deploy `firestore.rules`; the current rules require a matching user ID, a verified email token, and approved document schemas.
 - Deploy the Vercel configuration, then verify the CSP, HSTS, `nosniff`, frame, referrer, and permissions headers on the live origin.
