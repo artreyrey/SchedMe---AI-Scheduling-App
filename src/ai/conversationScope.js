@@ -1,6 +1,9 @@
 const SCHEDULING_LANGUAGE = /\b(?:task|tasks|todo|schedule|scheduled|scheduling|calendar|plan|planning|planner|time|timeslot|availability|available|busy|free|deadline|appointment|meeting|event|reminder|remind|today|tomorrow|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|reschedule|move|cancel|delete|remove|complete|completed|done|finish|finished|urgent|important|priority|priorities|classify|classification|color|colour)\b/i
 const TIME_LANGUAGE = /\b(?:[01]?\d(?::[0-5]\d)?\s*(?:am|pm)|[01]?\d(?::[0-5]\d)?\s*(?:-|–|—|to)\s*[01]?\d(?::[0-5]\d)?\s*(?:am|pm))\b/i
-const GREETING = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|how\s+are\s+you)[!.?\s]*$/i
+const GREETING = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!.?\s]*$/i
+const HOW_ARE_YOU = /^(?:how\s+are\s+you|how(?:'s|\s+is)\s+it\s+going|how\s+do\s+you\s+feel|are\s+you\s+(?:doing\s+)?(?:okay|ok|well|good))[!.?\s]*$/i
+const POSITIVE_WELLBEING = /^(?:i(?:'m|\s+am)\s+)?(?:good|great|fine|okay|ok|doing\s+(?:good|great|fine|okay|ok|well)|feeling\s+(?:good|great|fine|okay|ok|well))(?:\s+(?:today|right\s+now))?(?:,?\s*(?:thanks|thank\s+you))?[!.?\s]*$/i
+const DIFFICULT_WELLBEING = /^(?:i(?:'m|\s+am|\s+feel)\s+)?(?:not\s+(?:good|great|fine|okay|ok|well)|bad|sad|tired|stressed|overwhelmed|anxious|worried|exhausted|burned\s*out|burnt\s*out|having\s+a\s+(?:bad|hard|rough)\s+day)(?:\s+(?:(?:today|right\s+now)\b|(?:about|because|with)\b.*))?[!.?\s]*$/i
 const THANKS = /^(?:thanks|thank\s+you|thank\s+you\s+so\s+much|great|awesome)[!.?\s]*$/i
 const CAPABILITY_QUESTION = /\b(?:what\s+(?:can|could)\s+(?:you|schedme|this\s+(?:ai|assistant|bot))\s+do|how\s+can\s+(?:you|schedme|this\s+(?:ai|assistant|bot))\s+help(?:\s+(?:me|users?|its\s+users?))?|help\s+me\s+use|your\s+(?:features|capabilities|limits?))\b/i
 const IDENTITY_QUESTION = /^(?:(?:who|what)\s+(?:are|r)\s+you|what\s+(?:is|['’]s)\s+(?:schedme|this\s+(?:ai|assistant|bot|chatbot))|tell\s+me\s+about\s+(?:yourself|schedme)|are\s+you\s+(?:an?\s+)?(?:ai|assistant|bot|chatbot))(?:\s+exactly)?[!.?\s]*$/i
@@ -44,6 +47,9 @@ export function getConversationScopeResponse(value, assistantOptions = 'SchedMe'
   if (!text) return null
   if (IDENTITY_QUESTION.test(text) || PURPOSE_QUESTION.test(text) || CAPABILITY_QUESTION.test(text)) return assistantPurpose(name, options.tasks, options.prefersConcise === true)
   if (GENERAL_TASK_HELP.test(text)) return 'Of course. What would you like to do with the task—add it, schedule it, change its priority or color, mark it done, or delete it?'
+  if (HOW_ARE_YOU.test(text)) return "I'm doing well—thanks for asking! How are you doing? You can tell me what’s on your mind, and when you’re ready, I’ll help turn it into a manageable plan."
+  if (DIFFICULT_WELLBEING.test(text)) return "I’m sorry things feel heavy right now. You can tell me what’s on your mind or which tasks are weighing on you, and we’ll sort through them one step at a time."
+  if (POSITIVE_WELLBEING.test(text)) return "I’m glad to hear that. Tell me what’s on your mind or what you’d like to get done, and we can shape it into a plan together."
   if (isSchedulingRelatedMessage(text)) return null
   if (GREETING.test(text)) return "Hi! I'm ready to help. What task would you like to schedule today?"
   if (THANKS.test(text)) return "You're welcome! What task would you like to plan next?"

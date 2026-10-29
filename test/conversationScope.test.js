@@ -16,8 +16,18 @@ test('redirects unrelated questions back to scheduling', () => {
   assert.match(getConversationScopeResponse('Who won the basketball game?'), /focused on tasks and scheduling/i)
 })
 
+test('responds naturally when the user wants to talk first', () => {
+  const response = getConversationScopeResponse('How are you?')
+  assert.match(response, /thanks for asking/i)
+  assert.match(response, /How are you doing/i)
+  assert.doesNotMatch(response, /What task would you like to schedule/i)
+  assert.match(getConversationScopeResponse("I'm stressed"), /one step at a time/i)
+  assert.match(getConversationScopeResponse("I'm overwhelmed about my thesis"), /things feel heavy/i)
+  assert.match(getConversationScopeResponse("I'm doing well"), /glad to hear that/i)
+})
+
 test('responds briefly to greetings and capability questions', () => {
-  assert.match(getConversationScopeResponse('How are you?'), /What task would you like to schedule today/i)
+  assert.match(getConversationScopeResponse('Hello'), /What task would you like to schedule today/i)
   assert.match(getConversationScopeResponse('What can you do?'), /natural-language requests into safe, verified changes/i)
 })
 
