@@ -4,6 +4,11 @@ function finiteCount(value) {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : 0
 }
 
+function localDayKey(now) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
 function dailyUsage(storage, date) {
   const stored = JSON.parse(storage.getItem(AI_USAGE_STORAGE_KEY) || '{}')
   return stored.date === date
@@ -23,7 +28,7 @@ function dailyUsage(storage, date) {
 export function recordAiUsageMetadata(metadata, storage = globalThis.localStorage, now = new Date()) {
   if (!metadata || !storage?.getItem || !storage?.setItem) return null
   try {
-    const date = now.toISOString().slice(0, 10)
+    const date = localDayKey(now)
     const current = dailyUsage(storage, date)
     const next = {
       ...current,
@@ -43,7 +48,7 @@ export function recordAiUsageMetadata(metadata, storage = globalThis.localStorag
 export function recordLocalCommandBypass(kind, storage = globalThis.localStorage, now = new Date()) {
   if (!kind || !storage?.getItem || !storage?.setItem) return null
   try {
-    const date = now.toISOString().slice(0, 10)
+    const date = localDayKey(now)
     const current = dailyUsage(storage, date)
     const localBypassByKind = current.localBypassByKind && typeof current.localBypassByKind === 'object' ? current.localBypassByKind : {}
     const next = {
@@ -65,4 +70,9 @@ export function readAiUsageTelemetry(storage = globalThis.localStorage) {
   if (!storage?.getItem) return null
   try { return JSON.parse(storage.getItem(AI_USAGE_STORAGE_KEY) || 'null') }
   catch { return null }
+}
+
+export function readTodayAiUsageTelemetry(storage = globalThis.localStorage, now = new Date()) {
+  const usage = readAiUsageTelemetry(storage)
+  return usage?.date === localDayKey(now) ? usage : null
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { AI_USAGE_STORAGE_KEY, readAiUsageTelemetry, recordAiUsageMetadata, recordLocalCommandBypass } from '../src/ai/usageTelemetry.js'
+import { AI_USAGE_STORAGE_KEY, readAiUsageTelemetry, readTodayAiUsageTelemetry, recordAiUsageMetadata, recordLocalCommandBypass } from '../src/ai/usageTelemetry.js'
 
 function memoryStorage() {
   const values = new Map()
@@ -37,10 +37,13 @@ test('counts local fast paths by command kind without storing command text', () 
   assert.equal(usage.requests, 0)
 })
 
-test('resets aggregates on a new UTC day and tolerates unavailable storage', () => {
+test('resets aggregates on a new local day and tolerates unavailable storage', () => {
   const storage = memoryStorage()
-  recordAiUsageMetadata({ totalTokenCount: 20 }, storage, new Date('2026-10-29T23:59:00Z'))
-  const next = recordAiUsageMetadata({ totalTokenCount: 10 }, storage, new Date('2026-10-30T00:01:00Z'))
+  const firstDay = new Date(2026, 9, 29, 23, 59)
+  const nextDay = new Date(2026, 9, 30, 0, 1)
+  recordAiUsageMetadata({ totalTokenCount: 20 }, storage, firstDay)
+  assert.equal(readTodayAiUsageTelemetry(storage, nextDay), null)
+  const next = recordAiUsageMetadata({ totalTokenCount: 10 }, storage, nextDay)
   assert.equal(next.requests, 1)
   assert.equal(next.totalTokens, 10)
   assert.equal(recordAiUsageMetadata({}, null), null)

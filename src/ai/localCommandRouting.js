@@ -33,12 +33,14 @@ export function getLocalCommandRoute({
   namedTaskMoveRequest = {},
   completionRequest = {},
   namedCompletionRequest = {},
+  bulkDeletionRequest = {},
   namedDeletionRequest = {},
   pendingAction = null,
 } = {}) {
   if (pendingAction) return { bypassGemini: false, kind: '', action: null }
   if (bulkMoveRequest.isBulk) return { bypassGemini: true, kind: 'bulk_move', action: null }
   if (namedTaskMoveRequest.isMultiple) return { bypassGemini: true, kind: 'named_move', action: null }
+  if (bulkDeletionRequest.isBulkDeletion) return { bypassGemini: true, kind: 'bulk_delete', action: null }
   if (namedDeletionRequest.isDeletion) return { bypassGemini: true, kind: 'delete', action: null }
   if (completionRequest.isCompletion || namedCompletionRequest.isMultiple) {
     return { bypassGemini: true, kind: completionRequest.completed === false || namedCompletionRequest.completed === false ? 'reopen' : 'complete', action: null }

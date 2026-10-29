@@ -68,3 +68,16 @@ test('turns a saved destructive action into an explicit confirmed action', () =>
   assert.equal(confirmed.confirmed, true)
   assert.equal(confirmed.requiresConfirmation, false)
 })
+
+test('preserves up to twenty task IDs for a confirmed bulk operation', () => {
+  const taskIds = Array.from({ length: 20 }, (_, index) => `task-${index + 1}`)
+  const pending = createPendingAction({
+    ...action,
+    intent: 'delete_task',
+    scope: 'matching',
+    target: { taskId: '', taskIds, query: '' },
+    destructive: true,
+  }, { awaitingConfirmation: true }, 1_000)
+
+  assert.deepEqual(pending.target.taskIds, taskIds)
+})

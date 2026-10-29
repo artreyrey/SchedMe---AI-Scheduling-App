@@ -7,7 +7,7 @@ function safeString(value, maximum = 240) {
 function safeTarget(value) {
   return {
     taskId: safeString(value?.taskId, 120),
-    taskIds: Array.isArray(value?.taskIds) ? [...new Set(value.taskIds.filter((id) => typeof id === 'string' && id))].slice(0, 12) : [],
+    taskIds: Array.isArray(value?.taskIds) ? [...new Set(value.taskIds.filter((id) => typeof id === 'string' && id))].slice(0, 20) : [],
     query: safeString(value?.query),
   }
 }

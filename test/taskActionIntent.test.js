@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseNamedTaskDeletionRequest, parseNamedTaskPriorityRequest } from '../src/ai/taskActionIntent.js'
+import { parseBulkTaskDeletionRequest, parseNamedTaskDeletionRequest, parseNamedTaskPriorityRequest } from '../src/ai/taskActionIntent.js'
 
 const tasks = [
   { id: 'logic', title: 'Thesis logic gawa', completed: false },
@@ -20,6 +20,24 @@ test('does not interpret a request to delete every task as a named deletion', ()
   assert.equal(parseNamedTaskDeletionRequest('delete all my tasks', tasks).isDeletion, false)
   assert.equal(parseNamedTaskDeletionRequest('remove thesis logic from my schedule', tasks).isDeletion, false)
   assert.equal(parseNamedTaskDeletionRequest('the meeting was canceled; remove it from my task list too', tasks).isDeletion, false)
+})
+
+test('recognizes date-scoped bulk deletion without treating the date as a task title', () => {
+  const now = new Date(2026, 9, 29, 12)
+  const shortRequest = parseBulkTaskDeletionRequest('remove my october 27 tasks', now)
+  const explicitRequest = parseBulkTaskDeletionRequest('delete all my tasks on october 27', now)
+
+  assert.equal(shortRequest.isBulkDeletion, true)
+  assert.equal(shortRequest.day.key, '2026-10-27')
+  assert.equal(explicitRequest.isBulkDeletion, true)
+  assert.equal(explicitRequest.day.key, '2026-10-27')
+})
+
+test('keeps unsafe or non-destructive date requests out of bulk deletion', () => {
+  const now = new Date(2026, 9, 29, 12)
+  assert.equal(parseBulkTaskDeletionRequest('delete all my tasks', now).isBulkDeletion, false)
+  assert.equal(parseBulkTaskDeletionRequest('remove my october 27 tasks from my calendar', now).isBulkDeletion, false)
+  assert.equal(parseBulkTaskDeletionRequest('delete homework tasks on october 27', now).isBulkDeletion, false)
 })
 
 test('resolves multiple fuzzy task names for urgent and important changes', () => {

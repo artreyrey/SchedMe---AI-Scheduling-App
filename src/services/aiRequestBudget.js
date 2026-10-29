@@ -35,13 +35,30 @@ function budgetError(code, message, retryAfterMs) {
   return error
 }
 
-export function consumeAiRequestBudget(uid, now = Date.now(), limits = {}) {
+function usageSnapshot(uid, now, limits) {
   const minuteLimit = limits.minuteLimit || configuredLimit('VITE_AI_MINUTE_REQUEST_LIMIT', DEFAULT_AI_REQUEST_LIMITS.minuteLimit)
   const dailyLimit = limits.dailyLimit || configuredLimit('VITE_AI_DAILY_REQUEST_LIMIT', DEFAULT_AI_REQUEST_LIMITS.dailyLimit)
   const dayStart = new Date(now)
   dayStart.setHours(0, 0, 0, 0)
   const requests = readUsage(uid).filter((timestamp) => timestamp >= dayStart.getTime() && timestamp <= now)
   const recent = requests.filter((timestamp) => timestamp > now - 60_000)
+  return { minuteLimit, dailyLimit, dayStart, requests, recent }
+}
+
+export function getAiRequestBudgetStatus(uid, now = Date.now(), limits = {}) {
+  const snapshot = usageSnapshot(uid, now, limits)
+  return {
+    minuteUsed: snapshot.recent.length,
+    minuteLimit: snapshot.minuteLimit,
+    minuteRemaining: Math.max(0, snapshot.minuteLimit - snapshot.recent.length),
+    dailyUsed: snapshot.requests.length,
+    dailyLimit: snapshot.dailyLimit,
+    dailyRemaining: Math.max(0, snapshot.dailyLimit - snapshot.requests.length),
+  }
+}
+
+export function consumeAiRequestBudget(uid, now = Date.now(), limits = {}) {
+  const { minuteLimit, dailyLimit, dayStart, requests, recent } = usageSnapshot(uid, now, limits)
   if (requests.length >= dailyLimit) {
     const tomorrow = new Date(dayStart)
     tomorrow.setDate(tomorrow.getDate() + 1)
@@ -52,7 +69,14 @@ export function consumeAiRequestBudget(uid, now = Date.now(), limits = {}) {
   }
   requests.push(now)
   writeUsage(uid, requests)
-  return { minuteUsed: recent.length + 1, minuteLimit, dailyUsed: requests.length, dailyLimit }
+  return {
+    minuteUsed: recent.length + 1,
+    minuteLimit,
+    minuteRemaining: Math.max(0, minuteLimit - recent.length - 1),
+    dailyUsed: requests.length,
+    dailyLimit,
+    dailyRemaining: Math.max(0, dailyLimit - requests.length),
+  }
 }
 
 export function clearAiRequestBudgetForTests(uid) {

@@ -7,6 +7,7 @@ const task = { id: 'drawing', title: 'Practice Drawing', date: '2026-11-02', sta
 test('bypasses Gemini for deterministic completion, deletion, and grouped moves', () => {
   assert.equal(getLocalCommandRoute({ completionRequest: { isCompletion: true, completed: true } }).kind, 'complete')
   assert.equal(getLocalCommandRoute({ completionRequest: { isCompletion: true, completed: false } }).kind, 'reopen')
+  assert.equal(getLocalCommandRoute({ bulkDeletionRequest: { isBulkDeletion: true } }).kind, 'bulk_delete')
   assert.equal(getLocalCommandRoute({ namedDeletionRequest: { isDeletion: true } }).kind, 'delete')
   assert.equal(getLocalCommandRoute({ namedTaskMoveRequest: { isMultiple: true } }).kind, 'named_move')
   assert.equal(getLocalCommandRoute({ bulkMoveRequest: { isBulk: true } }).kind, 'bulk_move')

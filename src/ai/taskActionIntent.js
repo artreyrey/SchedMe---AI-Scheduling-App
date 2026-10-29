@@ -1,4 +1,4 @@
-import { findTaskMatch } from './schedulingIntent.js'
+import { findTaskMatch, getMondayWeek, parseTaskDate } from './schedulingIntent.js'
 
 const PRIORITY_LABEL = '(?:urgent\\s*(?:and|&|\\+)\\s*important|important\\s*(?:and|&|\\+)\\s*urgent|not[\\s-]*urgent|flexible|urgent|important)'
 
@@ -73,6 +73,34 @@ export function parseNamedTaskDeletionRequest(value, tasks) {
   }
 
   return { isDeletion: true, ...resolveTaskNames(namesText, tasks) }
+}
+
+function escapeRegularExpression(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function parseBulkTaskDeletionRequest(value, now = new Date(), weekDays = getMondayWeek(0, now)) {
+  const text = String(value || '').trim()
+  const hasDeleteCommand = /\b(?:delete|remove|erase)\b/i.test(text)
+  const isCancellationFlow = /\b(?:cancelled|canceled|called off|not happening anymore|no longer happening)\b/i.test(text)
+  const onlyRemovesFromCalendar = /\bfrom\s+(?:(?:the|my)\s+)?(?:schedule|calendar)\b/i.test(text)
+  const mentionsTasks = /\b(?:tasks|todos)\b/i.test(text)
+  if (!hasDeleteCommand || isCancellationFlow || onlyRemovesFromCalendar || !mentionsTasks) {
+    return { isBulkDeletion: false, day: null }
+  }
+
+  const day = parseTaskDate(text, now, weekDays)
+  if (!day?.key || day.ambiguous || !day.token) return { isBulkDeletion: false, day: null }
+
+  const dayToken = escapeRegularExpression(day.token)
+  const explicitlyAll = /\b(?:all|every)\s+(?:of\s+)?(?:my\s+)?(?:tasks|todos)\b/i.test(text)
+  const dayOwnsTaskPhrase = new RegExp(`\\b(?:my\\s+)?${dayToken}\\s+(?:scheduled\\s+)?(?:tasks|todos)\\b`, 'i').test(text)
+  const taskPhraseOwnsDay = new RegExp(`\\b(?:delete|remove|erase)\\s+(?:my\\s+)?(?:tasks|todos)\\s+(?:scheduled\\s+)?(?:on|for|from)\\s+${dayToken}\\b`, 'i').test(text)
+  if (!explicitlyAll && !dayOwnsTaskPhrase && !taskPhraseOwnsDay) {
+    return { isBulkDeletion: false, day: null }
+  }
+
+  return { isBulkDeletion: true, day }
 }
 
 export function parseNamedTaskPriorityRequest(value, tasks) {

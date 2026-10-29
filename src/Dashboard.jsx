@@ -10,7 +10,7 @@ import { confirmsTaskDeletion, declinesTaskDeletion, isCancellationMessage, want
 import { getDefaultPeriodTimes, getDroppedCalendarSlot, validateCalendarEntry, validateOptionalScheduleEntry } from './ai/calendarEditor.js'
 import { applyTaskCompletionContext, parseNamedTaskCompletionRequest, parseTaskCompletionRequest } from './ai/completionIntent.js'
 import { parseTaskAttributesIntent, parseTaskCategoryIntent, parseTaskColorChangeIntent, parseTaskCreationIntent } from './ai/taskCreationIntent.js'
-import { parseNamedTaskDeletionRequest, parseNamedTaskPriorityRequest } from './ai/taskActionIntent.js'
+import { parseBulkTaskDeletionRequest, parseNamedTaskDeletionRequest, parseNamedTaskPriorityRequest } from './ai/taskActionIntent.js'
 import { getConversationScopeResponse } from './ai/conversationScope.js'
 import { buildCompactActionContext } from './ai/actionContext.js'
 import { actionIntentShadowEnabled, contextSchedulingActionsEnabled, contextTaskActionsEnabled, interpretActionIntent } from './ai/actionInterpreter.js'
@@ -19,10 +19,11 @@ import { planContextAvailabilityAction } from './ai/availabilityAction.js'
 import { planContextTaskAction, shouldInterpretContextTaskAction } from './ai/contextTaskAction.js'
 import { confirmedPendingAction, createPendingAction, mergePendingAction } from './ai/pendingAction.js'
 import { getLocalCommandRoute } from './ai/localCommandRouting.js'
-import { recordLocalCommandBypass } from './ai/usageTelemetry.js'
+import { readTodayAiUsageTelemetry, recordLocalCommandBypass } from './ai/usageTelemetry.js'
+import { formatAiAllowanceStatus, getAiAllowanceWarning, isAiAllowanceStatusRequest } from './ai/allowanceStatus.js'
 import { deleteUserVoiceMessages, loadVoiceMessage, saveVoiceMessage } from './services/voiceMessageStore.js'
 import { commitTaskOperation, createTaskDocumentId, newOperationRequestId, undoLastTaskOperation } from './services/taskOperationService.js'
-import { consumeAiRequestBudget } from './services/aiRequestBudget.js'
+import { consumeAiRequestBudget, getAiRequestBudgetStatus } from './services/aiRequestBudget.js'
 import { planTaskListDrop, sortTasksForGroup } from './taskListOrder.js'
 import ThemePicker from './components/ThemePicker.jsx'
 
@@ -1627,6 +1628,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     let completionRequest = parseTaskCompletionRequest(text, weekDays)
     completionRequest = applyTaskCompletionContext(completionRequest, text, previousCompletionRequest, schedulingState.lastAction)
     const namedCompletionRequest = parseNamedTaskCompletionRequest(text, tasks)
+    const bulkDeletionRequest = parseBulkTaskDeletionRequest(text, new Date(), weekDays)
     const namedDeletionRequest = parseNamedTaskDeletionRequest(text, tasks)
     const nextProfile = learnInteractionStyle(interactionProfile, text, preliminary.isCompact)
     let voiceMessage = null
@@ -1647,8 +1649,10 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setChatBusy(true)
     setChatError('')
 
+    let aiAllowanceNotice = ''
+    const withAiAllowanceNotice = (message) => aiAllowanceNotice ? `${message}\n\n${aiAllowanceNotice}` : message
     const complete = async (message, nextState = schedulingState, extra = {}) => {
-      await persistConversation([...next, { role: 'model', text: message, ...extra }], nextState, nextProfile)
+      await persistConversation([...next, { role: 'model', text: withAiAllowanceNotice(message), ...extra }], nextState, nextProfile)
     }
 
     const nextQueuedTask = (state, excludedIds = []) => getSchedulingQueue(tasks, [...state.deferredTaskIds, ...excludedIds])[0]
@@ -1931,6 +1935,11 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     }
 
     try {
+      if (isAiAllowanceStatusRequest(text)) {
+        const budgetStatus = getAiRequestBudgetStatus(user.uid)
+        await complete(formatAiAllowanceStatus(budgetStatus, readTodayAiUsageTelemetry()), schedulingState)
+        return
+      }
       const savedPendingAction = schedulingState.pendingAction
       if (savedPendingAction && /^(?:never mind|nevermind|forget it|cancel request|stop|not now)[.!\s]*$/i.test(text)) {
         await complete('Okay—the pending change was canceled.', {
@@ -1964,6 +1973,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         namedTaskMoveRequest,
         completionRequest,
         namedCompletionRequest,
+        bulkDeletionRequest,
         namedDeletionRequest,
         pendingAction: savedPendingAction,
       })
@@ -1985,7 +1995,8 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
         })
         try {
-          consumeAiRequestBudget(user.uid)
+          const budgetStatus = consumeAiRequestBudget(user.uid)
+          aiAllowanceNotice = getAiAllowanceWarning(budgetStatus) || aiAllowanceNotice
           action = await interpretActionIntent(actionContext)
         }
         catch (error) { console.warn('[SchedMe context actions] Interpreter unavailable; using the existing scheduler.', error?.message || error) }
@@ -2036,7 +2047,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
               ? (weekDays.find((day) => day.key === availabilityPlan.dates[0])?.label || availabilityPlan.dates[0])
               : 'the planning week'
             await persistConversation(
-              [...next, { role: 'model', text: `Got it—for ${dateLabel}, I’ll look for free time between ${formatTimeRange(availabilityPlan.window.startTime, availabilityPlan.window.endTime)}.` }],
+              [...next, { role: 'model', text: withAiAllowanceNotice(`Got it—for ${dateLabel}, I’ll look for free time between ${formatTimeRange(availabilityPlan.window.startTime, availabilityPlan.window.endTime)}.`) }],
               { ...EMPTY_SCHEDULING_STATE, lastReferencedTaskId: schedulingState.lastReferencedTaskId, lastAction: schedulingState.lastAction },
               nextProfile,
               availabilityPlan.availability,
@@ -2196,6 +2207,37 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       const namedPriorityRequest = parseNamedTaskPriorityRequest(text, tasks)
       const requestedAttributes = parseTaskAttributesIntent(text)
       const requestedAttributeDescription = describeRequestedTaskAttributes(requestedAttributes)
+
+      if (bulkDeletionRequest.isBulkDeletion) {
+        const matchingTasks = tasks.filter((task) => task.date === bulkDeletionRequest.day.key)
+        if (!matchingTasks.length) {
+          await complete(`There are no tasks scheduled on ${bulkDeletionRequest.day.label}, so I didn't delete anything.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        if (matchingTasks.length > 20) {
+          await complete(`I found ${matchingTasks.length} tasks scheduled on ${bulkDeletionRequest.day.label}. For safety, I can delete up to 20 tasks in one confirmed action. Please delete some manually or ask for a smaller named group first.`, { ...EMPTY_SCHEDULING_STATE })
+          return
+        }
+        const taskIds = matchingTasks.map((task) => task.id)
+        const bulkDeleteAction = {
+          intent: 'delete_task',
+          confidence: 1,
+          scope: 'matching',
+          target: { taskId: '', taskIds, query: '' },
+          patch: {},
+          constraints: { date: bulkDeletionRequest.day.key },
+          destructive: true,
+          requiresConfirmation: true,
+          confirmed: false,
+          preserveUnspecified: true,
+        }
+        const pendingAction = createPendingAction(bulkDeleteAction, { reason: 'confirm_delete', awaitingConfirmation: true })
+        await complete(
+          `I found ${matchingTasks.length} ${matchingTasks.length === 1 ? 'task' : 'tasks'} scheduled on ${bulkDeletionRequest.day.label}. Delete ${matchingTasks.length === 1 ? 'it' : 'all of them'} permanently from your tasks and calendar? Please answer yes or no.`,
+          pendingActionState(pendingAction, matchingTasks.length === 1 ? matchingTasks[0].id : ''),
+        )
+        return
+      }
 
       if (namedDeletionRequest.isDeletion) {
         if (namedDeletionRequest.unmatchedNames.length || namedDeletionRequest.ambiguousNames.length) {
@@ -2954,12 +2996,13 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       }
 
       const history = normalizedGeminiHistory(messages)
-      consumeAiRequestBudget(user.uid)
+      const budgetStatus = consumeAiRequestBudget(user.uid)
+      aiAllowanceNotice = getAiAllowanceWarning(budgetStatus) || aiAllowanceNotice
       const response = await askPlanningAssistant({ message: text, history, tasks, memory: aiMemory, planningDates, availability, currentDate: localDateKey(new Date()), interactionProfile: nextProfile })
       const correctedResponse = stopRepeatedPriorityPrompt(response, tasks, text)
       const plan = validatePlanningResponse(correctedResponse, tasks, planningDates, availability)
       const hasActions = plan.taskUpdates.length > 0 || plan.scheduleProposal.length > 0
-      await persistConversation([...next, { role: 'model', text: correctedResponse.message, ...(hasActions ? { plan } : {}) }], schedulingState, nextProfile, plan.availability)
+      await persistConversation([...next, { role: 'model', text: withAiAllowanceNotice(correctedResponse.message), ...(hasActions ? { plan } : {}) }], schedulingState, nextProfile, plan.availability)
     } catch (error) {
       console.error('SchedMe AI request failed', error)
       setChatError(error?.code ? explainAiError(error) : error?.message || 'SchedMe could not complete that request. Please try again.')
