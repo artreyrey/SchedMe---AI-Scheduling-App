@@ -21,7 +21,7 @@ import { confirmedPendingAction, createPendingAction, mergePendingAction } from 
 import { getLocalCommandRoute } from './ai/localCommandRouting.js'
 import { readTodayAiUsageTelemetry, recordLocalCommandBypass } from './ai/usageTelemetry.js'
 import { formatAiAllowanceStatus, getAiAllowanceWarning, isAiAllowanceStatusRequest } from './ai/allowanceStatus.js'
-import { deleteUserVoiceMessages, loadVoiceMessage, saveVoiceMessage } from './services/voiceMessageStore.js'
+import { deleteUserVoiceMessages, loadVoiceMessage } from './services/voiceMessageStore.js'
 import { commitTaskOperation, createTaskDocumentId, newOperationRequestId, undoLastTaskOperation } from './services/taskOperationService.js'
 import { consumeAiRequestBudget, getAiRequestBudgetStatus } from './services/aiRequestBudget.js'
 import { planTaskListDrop, sortTasksForGroup } from './taskListOrder.js'
@@ -743,15 +743,11 @@ function formatVoiceDuration(value) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
-function MicrophoneIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6" /></svg>
-}
-
 function VoiceWaveform({ active = false, progress = 0 }) {
   return <span className={`voice-waveform ${active ? 'is-active' : ''}`} aria-hidden="true">{voiceWaveBars.map((height, index) => <i className={(index + 1) / voiceWaveBars.length <= progress ? 'is-played' : ''} key={index} style={{ '--voice-bar': `${height}px`, '--voice-delay': `${index * -34}ms` }} />)}</span>
 }
 
-function VoiceMessage({ duration, src = '', transcript = '', onRemove = null }) {
+function VoiceMessage({ duration, src = '', transcript = '' }) {
   const [playing, setPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
   const [playbackRate, setPlaybackRate] = useState(1)
@@ -782,32 +778,9 @@ function VoiceMessage({ duration, src = '', transcript = '', onRemove = null }) 
       <button type="button" className="voice-play-button" onClick={togglePlayback} disabled={!src} aria-label={src ? (playing ? 'Pause voice message' : 'Play voice message') : 'Voice playback is unavailable on this device'}>{playing ? 'Ⅱ' : '▶'}</button>
       <VoiceWaveform active={playing} progress={progress} />
       <span className="voice-message-meta"><time>{formatVoiceDuration(duration)}</time><button type="button" className="voice-speed-button" onClick={changePlaybackRate} disabled={!src} aria-label={`Playback speed ${playbackRate} times`}>{playbackRate}×</button></span>
-      {onRemove && <button type="button" className="voice-remove-button" onClick={onRemove} aria-label="Discard voice recording">×</button>}
     </div>
     {transcript && <><button type="button" className="voice-transcript-toggle" aria-expanded={transcriptOpen} onClick={() => setTranscriptOpen((open) => !open)}>{transcriptOpen ? 'Hide transcription' : 'View transcription'}</button>{transcriptOpen && <p className="voice-transcript-text">{transcript}</p>}</>}
     {src && <audio ref={audioRef} src={src} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={(event) => setProgress(event.currentTarget.duration ? event.currentTarget.currentTime / event.currentTarget.duration : 0)} />}
-  </div>
-}
-
-function MicrophonePermissionModal({ blocked, onCancel, onContinue }) {
-  useEffect(() => {
-    function closeOnEscape(event) {
-      if (event.key === 'Escape') onCancel()
-    }
-    document.addEventListener('keydown', closeOnEscape)
-    return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [onCancel])
-
-  return <div className="microphone-permission-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
-    <section className="microphone-permission-modal" role="dialog" aria-modal="true" aria-labelledby="microphone-permission-title">
-      <span className="microphone-permission-icon"><MicrophoneIcon /></span>
-      <div><p className="dashboard-kicker">Voice message</p><h2 id="microphone-permission-title">{blocked ? 'Microphone is blocked' : 'Use your microphone?'}</h2></div>
-      <p>{blocked
-        ? 'Your browser has already blocked microphone access. Open the lock icon beside the website address, set Microphone to Allow, then try again.'
-        : 'SchedMe needs microphone access to record your voice message. Your browser will show the final permission request next.'}</p>
-      {!blocked && <small>The recording stays in this browser. Transcription uses the browser’s built-in speech recognition with no paid API.</small>}
-      <div className="microphone-permission-actions"><button type="button" onClick={onCancel}>{blocked ? 'Close' : 'Cancel'}</button>{!blocked && <button type="button" className="is-primary" onClick={onContinue}>Continue</button>}</div>
-    </section>
   </div>
 }
 
@@ -1259,15 +1232,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
   const [chatError, setChatError] = useState('')
-  const [voiceSupported, setVoiceSupported] = useState(false)
-  const [voiceTranscriptionSupported, setVoiceTranscriptionSupported] = useState(false)
-  const [voiceStarting, setVoiceStarting] = useState(false)
-  const [microphonePermissionPrompt, setMicrophonePermissionPrompt] = useState(null)
-  const [voiceRecording, setVoiceRecording] = useState(false)
-  const [voiceDuration, setVoiceDuration] = useState(0)
-  const [voiceDraft, setVoiceDraft] = useState(null)
-  const [voiceError, setVoiceError] = useState('')
-  const [voiceTranscriptStatus, setVoiceTranscriptStatus] = useState('')
   const [, setVoiceAudioVersion] = useState(0)
   const [aiMemory, setAiMemory] = useState(DEFAULT_AI_MEMORY)
   const [aiMemoryError, setAiMemoryError] = useState('')
@@ -1285,17 +1249,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   const calendarNoticeTimerRef = useRef(null)
   const suppressCalendarClickRef = useRef(false)
   const greetedDateRef = useRef('')
-  const voiceRecognitionRef = useRef(null)
-  const voiceRecorderRef = useRef(null)
-  const voiceStreamRef = useRef(null)
-  const voiceTimerRef = useRef(null)
-  const voicePermissionTimerRef = useRef(null)
-  const voiceRecognitionRestartTimerRef = useRef(null)
-  const voiceStartedAtRef = useRef(0)
-  const voiceRecordingRef = useRef(false)
-  const voiceBaseTextRef = useRef('')
-  const voiceFinalTextRef = useRef('')
-  const voiceChunksRef = useRef([])
   const voiceAudioUrlsRef = useRef(new Map())
   const weekDays = useMemo(() => getWeekDays(weekOffset), [weekOffset])
   const planningDates = useMemo(() => weekDays.map((day) => day.key), [weekDays])
@@ -1339,12 +1292,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   }, [messages, chatBusy])
 
   useEffect(() => {
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    setVoiceSupported(Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia))
-    setVoiceTranscriptionSupported(Boolean(Recognition))
-  }, [])
-
-  useEffect(() => {
     if (!menuOpen) return undefined
 
     function closeOnOutsidePress(event) {
@@ -1372,12 +1319,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   useEffect(() => () => {
     window.clearTimeout(menuTimerRef.current)
     window.clearTimeout(calendarNoticeTimerRef.current)
-    window.clearInterval(voiceTimerRef.current)
-    window.clearTimeout(voicePermissionTimerRef.current)
-    window.clearTimeout(voiceRecognitionRestartTimerRef.current)
-    voiceRecognitionRef.current?.abort()
-    if (voiceRecorderRef.current?.state === 'recording') voiceRecorderRef.current.stop()
-    voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
     voiceAudioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
   }, [])
 
@@ -1562,233 +1503,8 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     if (restored) setVoiceAudioVersion((version) => version + 1)
   }
 
-  function discardVoiceDraft() {
-    if (voiceDraft?.url) URL.revokeObjectURL(voiceDraft.url)
-    setVoiceDraft(null)
-    setVoiceDuration(0)
-    setVoiceError('')
-    setVoiceTranscriptStatus('')
-  }
-
-  function stopVoiceRecording() {
-    if (!voiceRecordingRef.current) return
-    voiceRecordingRef.current = false
-    setVoiceRecording(false)
-    window.clearInterval(voiceTimerRef.current)
-    window.clearTimeout(voiceRecognitionRestartTimerRef.current)
-    const elapsed = Math.max(1, Math.round((Date.now() - voiceStartedAtRef.current) / 1000))
-    setVoiceDuration(elapsed)
-
-    const recognition = voiceRecognitionRef.current
-    voiceRecognitionRef.current = null
-    try { recognition?.stop() } catch { /* Recognition may already have ended. */ }
-
-    const recorder = voiceRecorderRef.current
-    if (recorder?.state === 'recording') recorder.stop()
-    else {
-      voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
-      voiceStreamRef.current = null
-    }
-  }
-
-  async function requestVoiceRecording() {
-    if (chatBusy || voiceStarting || !conversationReady) return
-    if (!voiceSupported) {
-      await startVoiceRecording()
-      return
-    }
-
-    let permissionState = 'prompt'
-    try {
-      const permission = await navigator.permissions?.query?.({ name: 'microphone' })
-      if (permission?.state) permissionState = permission.state
-    } catch { /* Some browsers only expose permission through getUserMedia. */ }
-
-    if (permissionState === 'granted') {
-      await startVoiceRecording()
-      return
-    }
-    setVoiceError('')
-    setMicrophonePermissionPrompt(permissionState === 'denied' ? 'blocked' : 'prompt')
-  }
-
-  async function startVoiceRecording() {
-    if (!voiceSupported || chatBusy || !conversationReady) {
-      if (!voiceSupported) setVoiceError(window.isSecureContext
-        ? 'Microphone recording is not available in this browser. Open the site in Chrome, Edge, or Safari.'
-        : 'Microphone access requires the secure production site. Open https://schedme.vercel.app in a new browser tab.')
-      return
-    }
-
-    discardVoiceDraft()
-    setVoiceStarting(true)
-    setVoiceError('Waiting for microphone permission…')
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
-
-    try {
-      try {
-        const permission = await navigator.permissions?.query?.({ name: 'microphone' })
-        if (permission?.state === 'denied') {
-          const deniedError = new Error('Microphone permission is blocked.')
-          deniedError.name = 'NotAllowedError'
-          throw deniedError
-        }
-      } catch (permissionError) {
-        if (permissionError?.name === 'NotAllowedError') throw permissionError
-      }
-
-      let permissionTimedOut = false
-      const permissionRequest = navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-        if (permissionTimedOut) {
-          stream.getTracks().forEach((track) => track.stop())
-          const timeoutError = new Error('Microphone permission timed out.')
-          timeoutError.name = 'PermissionTimeoutError'
-          throw timeoutError
-        }
-        return stream
-      })
-      const permissionTimeout = new Promise((_, reject) => {
-        voicePermissionTimerRef.current = window.setTimeout(() => {
-          permissionTimedOut = true
-          const timeoutError = new Error('Microphone permission timed out.')
-          timeoutError.name = 'PermissionTimeoutError'
-          reject(timeoutError)
-        }, 15000)
-      })
-      const stream = await Promise.race([permissionRequest, permissionTimeout])
-      window.clearTimeout(voicePermissionTimerRef.current)
-      const recorder = new MediaRecorder(stream)
-      let recognition = Recognition ? new Recognition() : null
-      voiceStreamRef.current = stream
-      voiceRecorderRef.current = recorder
-      voiceRecognitionRef.current = recognition
-      voiceChunksRef.current = []
-      voiceBaseTextRef.current = chatInput.trim()
-      voiceFinalTextRef.current = ''
-      voiceStartedAtRef.current = Date.now()
-      voiceRecordingRef.current = true
-      setVoiceTranscriptStatus(recognition ? 'Starting live transcription…' : 'Live transcription is unavailable in this browser.')
-
-      recorder.ondataavailable = (event) => {
-        if (event.data?.size) voiceChunksRef.current.push(event.data)
-      }
-      recorder.onstop = () => {
-        const seconds = Math.max(1, Math.round((Date.now() - voiceStartedAtRef.current) / 1000))
-        const blob = new Blob(voiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-        if (blob.size) setVoiceDraft({ blob, url: URL.createObjectURL(blob), duration: seconds })
-        setVoiceDuration(seconds)
-        stream.getTracks().forEach((track) => track.stop())
-        voiceStreamRef.current = null
-        voiceRecorderRef.current = null
-      }
-
-      if (recognition) {
-        recognition.lang = navigator.language || 'en-US'
-        // Short recognition sessions restart after each phrase. This is more
-        // reliable across Chromium-based and mobile browsers than continuous mode.
-        recognition.continuous = false
-        recognition.interimResults = true
-        recognition.maxAlternatives = 1
-        recognition.onstart = () => {
-          setVoiceTranscriptStatus('Listening… speak now.')
-          setVoiceError('')
-        }
-        recognition.onspeechstart = () => setVoiceTranscriptStatus('Hearing you…')
-        recognition.onresult = (event) => {
-          let interim = ''
-          for (let index = event.resultIndex; index < event.results.length; index += 1) {
-            const transcript = event.results[index][0]?.transcript || ''
-            if (event.results[index].isFinal) voiceFinalTextRef.current += `${transcript.trim()} `
-            else interim += transcript
-          }
-          const spoken = `${voiceFinalTextRef.current}${interim}`.trim()
-          setVoiceTranscriptStatus(spoken ? 'Transcribing live…' : 'Listening… speak now.')
-          setChatInput([voiceBaseTextRef.current, spoken].filter(Boolean).join(' ').slice(0, 2000))
-        }
-        recognition.onerror = (event) => {
-          if (event.error === 'aborted') return
-          if (event.error === 'no-speech') {
-            setVoiceTranscriptStatus('Listening… speak when ready.')
-            return
-          }
-
-          const blocked = event.error === 'not-allowed' || event.error === 'service-not-allowed'
-          const unavailable = blocked || event.error === 'audio-capture' || event.error === 'language-not-supported'
-          setVoiceError(blocked
-            ? 'Live transcription was blocked by this browser. Your audio is still recording; allow speech recognition or use Chrome or Edge.'
-            : event.error === 'network'
-              ? 'Live transcription lost its connection. I’ll keep trying while the audio records.'
-              : 'Live transcription paused. I’ll keep trying while the audio records.')
-          setVoiceTranscriptStatus(unavailable ? 'Live transcription unavailable—audio is still recording.' : 'Reconnecting live transcription…')
-          if (unavailable) {
-            recognition.onend = null
-            if (voiceRecognitionRef.current === recognition) voiceRecognitionRef.current = null
-          }
-        }
-        recognition.onend = () => {
-          if (!voiceRecordingRef.current) return
-          setVoiceTranscriptStatus((status) => status.startsWith('Live transcription unavailable') ? status : 'Listening for your next words…')
-          window.clearTimeout(voiceRecognitionRestartTimerRef.current)
-          voiceRecognitionRestartTimerRef.current = window.setTimeout(() => {
-            if (!voiceRecordingRef.current || voiceRecognitionRef.current !== recognition) return
-            try { recognition.start() } catch {
-              setVoiceTranscriptStatus('Reconnecting live transcription…')
-            }
-          }, 180)
-        }
-      }
-
-      recorder.start(250)
-      if (recognition) {
-        try { recognition.start() } catch {
-          voiceRecognitionRef.current = null
-          recognition = null
-          setVoiceTranscriptStatus('Live transcription could not start—audio is still recording.')
-        }
-      }
-      setVoiceRecording(true)
-      setVoiceStarting(false)
-      setVoiceDuration(0)
-      setVoiceError(recognition ? '' : 'Recording is working, but this browser has no free built-in transcription. Type what you said before sending, or use Chrome, Edge, or Safari.')
-      voiceTimerRef.current = window.setInterval(() => {
-        const seconds = Math.floor((Date.now() - voiceStartedAtRef.current) / 1000)
-        setVoiceDuration(seconds)
-        if (seconds >= 300) stopVoiceRecording()
-      }, 250)
-    } catch (error) {
-      voiceRecordingRef.current = false
-      setVoiceRecording(false)
-      setVoiceStarting(false)
-      window.clearInterval(voiceTimerRef.current)
-      window.clearTimeout(voicePermissionTimerRef.current)
-      window.clearTimeout(voiceRecognitionRestartTimerRef.current)
-      try { voiceRecognitionRef.current?.abort() } catch { /* Recognition may not have started. */ }
-      const failedRecorder = voiceRecorderRef.current
-      if (failedRecorder?.state === 'recording') {
-        failedRecorder.onstop = null
-        failedRecorder.stop()
-      }
-      voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
-      voiceRecognitionRef.current = null
-      voiceRecorderRef.current = null
-      voiceStreamRef.current = null
-      setVoiceError(error?.name === 'NotAllowedError'
-        ? 'Microphone access is blocked. Select the lock or microphone icon in the address bar, set Microphone to Allow, then try again.'
-        : error?.name === 'PermissionTimeoutError'
-          ? 'The browser permission prompt did not finish. Check the address bar for a microphone icon, choose Allow, then click the mic again. If this is an IDE preview, open schedme.vercel.app in a new tab.'
-          : error?.name === 'NotFoundError'
-            ? 'No microphone was found on this device.'
-            : error?.name === 'NotReadableError'
-              ? 'The microphone is being used by another app. Close that app and try again.'
-              : 'The microphone could not start. Try again or type your message.')
-    }
-  }
-
   async function resetConversation() {
     if (!window.confirm('Clear this saved conversation? Your tasks and assistant preferences will stay unchanged.')) return
-    if (voiceRecordingRef.current) stopVoiceRecording()
-    setMicrophonePermissionPrompt(null)
-    discardVoiceDraft()
     voiceAudioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     voiceAudioUrlsRef.current.clear()
     deleteUserVoiceMessages(user.uid).catch(() => {})
@@ -1814,7 +1530,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
   async function sendChat(event, directMessage = '') {
     event?.preventDefault()
     const text = (directMessage || chatInput).trim()
-    if (!text || chatBusy || voiceRecording || !conversationReady) return
+    if (!text || chatBusy || !conversationReady) return
     const operationRequestId = newOperationRequestId('chat')
 
     const preliminary = parseSchedulingInput(text, tasks, weekDays, schedulingState.activeTaskId, aiMemory.defaultDuration || 60)
@@ -1828,21 +1544,9 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     const bulkDeletionRequest = parseBulkTaskDeletionRequest(text, new Date(), weekDays)
     const namedDeletionRequest = parseNamedTaskDeletionRequest(text, tasks)
     const nextProfile = learnInteractionStyle(interactionProfile, text, preliminary.isCompact)
-    let voiceMessage = null
-    if (!directMessage && voiceDraft) {
-      const voiceId = globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}`
-      voiceAudioUrlsRef.current.set(voiceId, voiceDraft.url)
-      saveVoiceMessage(user.uid, voiceId, voiceDraft.blob).catch(() => {})
-      voiceMessage = { kind: 'voice', voiceId, voiceDurationSeconds: voiceDraft.duration }
-    }
-    const next = [...messages, { role: 'user', text, ...(voiceMessage || {}) }]
+    const next = [...messages, { role: 'user', text }]
     setMessages(next)
     setChatInput('')
-    if (voiceMessage) {
-      setVoiceDraft(null)
-      setVoiceDuration(0)
-      setVoiceError('')
-    }
     setChatBusy(true)
     setChatError('')
 
@@ -3543,13 +3247,9 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
             {getSchedulingQueue(tasks).length > 0 && <button type="button" className="ai-unscheduled-banner" onClick={() => sendChat(null, 'Schedule my unscheduled tasks')} disabled={chatBusy || !conversationReady}><span>{getSchedulingQueue(tasks).length}</span><span><strong>Tasks need a time</strong><small>Schedule them one at a time</small></span><b>→</b></button>}
             <div className="ai-chat-transcript" aria-live="polite">{messages.map((message, index) => <div className={`ai-chat-message ${message.role}`} key={`${index}-${message.role}`}><span className="ai-message-avatar" aria-hidden="true">{message.role === 'model' ? aiMemory.chatbotName.charAt(0).toUpperCase() : (user.displayName || 'Y').charAt(0).toUpperCase()}</span><div className="ai-chat-bubble">{message.kind === 'voice' ? <VoiceMessage duration={message.voiceDurationSeconds} src={voiceAudioUrlsRef.current.get(message.voiceId) || ''} transcript={message.text} /> : <p>{message.text}</p>}{message.role === 'model' && message.plan && <PlanReview plan={message.plan} tasks={tasks} onApply={() => applyPlan(message.plan, index)} busy={planBusy} applied={message.planApplied} error={planError} />}{message.role === 'user' && <button type="button" className="ai-remember-button" onClick={() => rememberPrompt(message.text)} disabled={aiMemoryBusy || aiMemory.preferences.some((item) => item.toLocaleLowerCase() === message.text.trim().slice(0, 240).toLocaleLowerCase())} title="Save this message as a long-term preference">{aiMemory.preferences.some((item) => item.toLocaleLowerCase() === message.text.trim().slice(0, 240).toLocaleLowerCase()) ? 'Remembered' : 'Remember'}</button>}</div></div>)}{chatBusy && <p className="ai-thinking">Thinking…</p>}<span ref={chatEndRef} aria-hidden="true" /></div>
             <div className="ai-prompt-suggestions"><button type="button" onClick={() => setChatInput('Schedule my unscheduled tasks')}>Schedule my tasks</button><button type="button" onClick={() => setChatInput('Make thesis / Monday / 2-3pm')}>Try compact format</button><button type="button" onClick={() => setChatInput('How are you?')}>Talk first</button></div>
-            <form className={`ai-input-preview ${voiceRecording ? 'is-recording' : ''} ${voiceDraft ? 'has-voice' : ''}`} onSubmit={sendChat}>
-              {voiceRecording ? <div className="voice-recording-live"><div className="voice-recording-controls"><span className="voice-recording-dot" aria-hidden="true" /><span className="voice-recording-label">Recording</span><VoiceWaveform active /><time>{formatVoiceDuration(voiceDuration)}</time><button type="button" className="ai-mic-button is-recording" onClick={stopVoiceRecording} aria-label="Stop voice recording" title="Stop recording"><MicrophoneIcon /></button></div><p className={`voice-live-transcript ${chatInput ? 'has-words' : ''}`} role="status" aria-live="polite"><span>{voiceTranscriptStatus || 'Live transcription'}</span>{chatInput || (voiceTranscriptionSupported ? 'Your words will appear here as you speak.' : 'This browser can record audio but does not offer live transcription. Use Chrome or Edge for live words.')}</p></div> : <>
-                {voiceDraft && <VoiceMessage duration={voiceDraft.duration} src={voiceDraft.url} onRemove={discardVoiceDraft} />}
-                <div className="ai-input-row"><input aria-label="Message SchedMe AI" value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={voiceDraft ? (voiceTranscriptionSupported ? 'Review or correct the transcript…' : 'Type what you said before sending…') : 'Task / Day / Time — e.g. Thesis / Monday / 2-3pm'} maxLength={2000} /><div className="ai-input-actions"><button type="button" className={`ai-mic-button ${voiceStarting ? 'is-starting' : ''}`} onClick={requestVoiceRecording} disabled={chatBusy || voiceStarting || !conversationReady} aria-label={voiceStarting ? 'Waiting for microphone permission' : 'Record a voice message'} title={voiceStarting ? 'Waiting for microphone permission' : 'Record a voice message'}><MicrophoneIcon /></button><button type="submit" className="ai-send-button" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button></div></div>
-              </>}
+            <form className="ai-input-preview" onSubmit={sendChat}>
+              <div className="ai-input-row"><input aria-label="Message SchedMe AI" value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Task / Day / Time — e.g. Thesis / Monday / 2-3pm" maxLength={2000} /><div className="ai-input-actions"><button type="submit" className="ai-send-button" disabled={chatBusy || !chatInput.trim() || !conversationReady} aria-label="Send message">↑</button></div></div>
             </form>
-            {voiceError && <p className="ai-phase-note" role="alert">{voiceError}</p>}
             {chatError && <p className="ai-phase-note" role="alert">{chatError}</p>}
             {aiMemoryError && <p className="ai-phase-note" role="alert">{aiMemoryError}</p>}
             <p className="ai-phase-note">Conversation history reloads on your account. Use Remember for lasting preferences, or Clear chat to remove the transcript.</p>
@@ -3588,7 +3288,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       />
       <div className={`floating-menu-backdrop ${menuOpen ? 'is-visible' : ''}`} aria-hidden="true" />
       {settingsOpen && <AssistantSettings memory={aiMemory} onClose={() => setSettingsOpen(false)} onSave={saveAssistantSettings} onForget={forgetPreference} saving={aiMemoryBusy} error={aiMemoryError} />}
-      {microphonePermissionPrompt && <MicrophonePermissionModal blocked={microphonePermissionPrompt === 'blocked'} onCancel={() => setMicrophonePermissionPrompt(null)} onContinue={() => { setMicrophonePermissionPrompt(null); startVoiceRecording() }} />}
       {calendarEditor && <CalendarEditorModal editor={calendarEditor} onClose={() => { setCalendarEditor(null); setCalendarError('') }} onConfirm={saveCalendarEntry} onDelete={deleteCalendarEntry} saving={calendarSaving} error={calendarError} />}
     </main>
   )

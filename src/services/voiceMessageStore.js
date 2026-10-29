@@ -21,16 +21,6 @@ function voiceKey(ownerId, voiceId) {
   return `${ownerId}:${voiceId}`
 }
 
-export async function saveVoiceMessage(ownerId, voiceId, blob) {
-  const database = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, 'readwrite')
-    transaction.objectStore(STORE_NAME).put({ key: voiceKey(ownerId, voiceId), ownerId, blob, savedAt: Date.now() })
-    transaction.oncomplete = () => { database.close(); resolve() }
-    transaction.onerror = () => { database.close(); reject(transaction.error) }
-  })
-}
-
 export async function loadVoiceMessage(ownerId, voiceId) {
   const database = await openDatabase()
   return new Promise((resolve, reject) => {
