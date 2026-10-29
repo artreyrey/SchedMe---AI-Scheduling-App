@@ -1,6 +1,6 @@
-import { getAI, getGenerativeModel, GoogleAIBackend, Schema, ThinkingLevel } from 'firebase/ai'
-import { app, appCheck } from '../firebase/config.js'
+import { getGenerativeModel, Schema, ThinkingLevel } from 'firebase/ai'
 import { ACTION_CATEGORIES, ACTION_INTENTS, ACTION_SCOPES, normalizeActionIntent } from './actionContext.js'
+import { getProtectedFirebaseAi } from './protectedFirebaseAi.js'
 import { recordAiUsageMetadata } from './usageTelemetry.js'
 
 const targetSchema = Schema.object({
@@ -64,7 +64,7 @@ Use find_free_time when the user asks to place a task where they are free. If th
 If the target is ambiguous, choose clarify, list the genuinely missing fields, and ask one short question. Mark destructive actions for confirmation. Do not claim that anything was saved and do not produce prose outside the schema.`
 
 export function actionIntentShadowEnabled() {
-  return import.meta.env.VITE_AI_INTENT_SHADOW_MODE === 'true'
+  return import.meta.env.DEV && import.meta.env.VITE_AI_INTENT_SHADOW_MODE === 'true'
 }
 
 export function contextSchedulingActionsEnabled() {
@@ -76,9 +76,7 @@ export function contextTaskActionsEnabled() {
 }
 
 export async function interpretActionIntent(context) {
-  if (!app) throw new Error('Firebase is not configured yet.')
-  if (!appCheck) throw new Error('Firebase App Check is required for the action interpreter.')
-  const ai = getAI(app, { backend: new GoogleAIBackend() })
+  const ai = getProtectedFirebaseAi()
   const model = getGenerativeModel(ai, {
     model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.5-flash-lite',
     systemInstruction: ACTION_SYSTEM_INSTRUCTION,

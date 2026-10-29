@@ -19,3 +19,12 @@ export function maskEmailAddress(email) {
 
   return `${localPart.slice(0, 3)}****${localPart.slice(-2)}@${domain}`
 }
+
+export function requiresEmailVerification(user) {
+  if (!user) return false
+
+  const usesPasswordSignIn = Array.isArray(user.providerData)
+    && user.providerData.some((provider) => provider?.providerId === 'password')
+
+  return usesPasswordSignIn && user.emailVerified !== true
+}

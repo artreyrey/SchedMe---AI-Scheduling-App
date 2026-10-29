@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { maskEmailAddress } from '../src/authUtils.js'
+import { maskEmailAddress, requiresEmailVerification } from '../src/authUtils.js'
 
 describe('maskEmailAddress', () => {
   it('keeps enough of a regular email recognizable without exposing it', () => {
@@ -14,5 +14,32 @@ describe('maskEmailAddress', () => {
 
   it('does not echo malformed input', () => {
     assert.equal(maskEmailAddress('not-an-email'), 'your email address')
+  })
+})
+
+describe('requiresEmailVerification', () => {
+  it('requires verification for an unverified password account', () => {
+    assert.equal(requiresEmailVerification({
+      emailVerified: false,
+      providerData: [{ providerId: 'password' }],
+    }), true)
+  })
+
+  it('allows verified password accounts', () => {
+    assert.equal(requiresEmailVerification({
+      emailVerified: true,
+      providerData: [{ providerId: 'password' }],
+    }), false)
+  })
+
+  it('does not apply the password-only gate to a Google account', () => {
+    assert.equal(requiresEmailVerification({
+      emailVerified: true,
+      providerData: [{ providerId: 'google.com' }],
+    }), false)
+  })
+
+  it('handles signed-out state', () => {
+    assert.equal(requiresEmailVerification(null), false)
   })
 })

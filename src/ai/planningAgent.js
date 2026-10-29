@@ -1,7 +1,7 @@
-import { getAI, getGenerativeModel, GoogleAIBackend, Schema } from 'firebase/ai'
-import { app, appCheck } from '../firebase/config.js'
+import { getGenerativeModel, Schema } from 'firebase/ai'
 import { DEFAULT_AI_MEMORY } from '../services/aiMemoryService.js'
 import personalityPolicy from './PERSONALITY.md?raw'
+import { getProtectedFirebaseAi } from './protectedFirebaseAi.js'
 import { recordAiUsageMetadata } from './usageTelemetry.js'
 
 const moodInstructions = {
@@ -32,13 +32,7 @@ const assistantResponseSchema = Schema.object({
 })
 
 export async function askPlanningAssistant({ message, history, tasks, memory = DEFAULT_AI_MEMORY, planningDates = [], availability = [], currentDate = '', interactionProfile = {} }) {
-  if (!app) throw new Error('Firebase is not configured yet.')
-  if (!appCheck) {
-    const error = new Error('Firebase App Check has not been initialized. Configure an App Check provider for this environment.')
-    error.code = 'app-check/not-initialized'
-    throw error
-  }
-  const ai = getAI(app, { backend: new GoogleAIBackend() })
+  const ai = getProtectedFirebaseAi()
   const safeMemory = {
     chatbotName: typeof memory?.chatbotName === 'string' ? memory.chatbotName.slice(0, 32) : DEFAULT_AI_MEMORY.chatbotName,
     mood: moodInstructions[memory?.mood] ? memory.mood : DEFAULT_AI_MEMORY.mood,

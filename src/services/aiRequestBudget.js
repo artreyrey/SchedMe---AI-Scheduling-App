@@ -62,7 +62,7 @@ export function consumeAiRequestBudget(uid, now = Date.now(), limits = {}) {
   if (requests.length >= dailyLimit) {
     const tomorrow = new Date(dayStart)
     tomorrow.setDate(tomorrow.getDate() + 1)
-    throw budgetError('ai/local-daily-limit', 'Your daily SchedMe AI allowance is used up. Exact commands and manual calendar controls still work.', tomorrow.getTime() - now)
+    throw budgetError('ai/local-daily-limit', "This device's daily SchedMe AI guide has reached its limit. Exact commands and manual calendar controls still work.", tomorrow.getTime() - now)
   }
   if (recent.length >= minuteLimit) {
     throw budgetError('ai/local-minute-limit', 'Too many AI requests were sent at once. Wait a moment and try again.', Math.max(1_000, recent[0] + 60_000 - now))

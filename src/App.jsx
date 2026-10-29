@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { createUserWithEmailAndPassword, GoogleAuthProvider, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signOut, updateProfile } from 'firebase/auth'
+import { browserLocalPersistence, browserSessionPersistence, createUserWithEmailAndPassword, GoogleAuthProvider, onAuthStateChanged, sendEmailVerification, sendPasswordResetEmail, setPersistence, signInWithEmailAndPassword, signInWithPopup, signOut, updateProfile } from 'firebase/auth'
 import { auth } from './firebase/config.js'
 import Dashboard from './Dashboard.jsx'
 import ResetPassword from './components/ResetPassword.jsx'
 import ThemePicker from './components/ThemePicker.jsx'
-import { maskEmailAddress } from './authUtils.js'
+import { maskEmailAddress, requiresEmailVerification } from './authUtils.js'
 import { resolveTheme, themeColor } from './themePreferences.js'
 
 const categories = [
@@ -63,6 +63,7 @@ function App() {
   const [authNotice, setAuthNotice] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [passwordResetBusy, setPasswordResetBusy] = useState(false)
+  const [rememberDevice, setRememberDevice] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [authResolved, setAuthResolved] = useState(!auth)
 
@@ -82,10 +83,24 @@ function App() {
   useEffect(() => {
     if (!auth) return undefined
     return onAuthStateChanged(auth, (user) => {
+      if (requiresEmailVerification(user)) {
+        setCurrentUser(null)
+        setAuthResolved(true)
+        return
+      }
+
       setCurrentUser(user)
       setAuthResolved(true)
     })
   }, [])
+
+  function verificationActionSettings() {
+    return { url: `${window.location.origin}/?auth=signin`, handleCodeInApp: false }
+  }
+
+  async function applySelectedPersistence() {
+    await setPersistence(auth, rememberDevice ? browserLocalPersistence : browserSessionPersistence)
+  }
 
   function openAuth(mode) {
     setAuthError('')
@@ -113,11 +128,34 @@ function App() {
 
     setAuthBusy(true)
     try {
+      await applySelectedPersistence()
       if (authMode === 'signup') {
         const credential = await createUserWithEmailAndPassword(auth, email, password)
-        await updateProfile(credential.user, { displayName: username.trim() })
+        try {
+          await updateProfile(credential.user, { displayName: username.trim() })
+          await sendEmailVerification(credential.user, verificationActionSettings())
+        } finally {
+          await signOut(auth)
+        }
+        setAuthMode('signin')
+        setAuthNotice('Your account was created. Check your inbox and verify your email before signing in.')
+        setUsername('')
+        setConfirmPassword('')
+        setPassword('')
+        return
       } else {
-        await signInWithEmailAndPassword(auth, email, password)
+        const credential = await signInWithEmailAndPassword(auth, email, password)
+        if (requiresEmailVerification(credential.user)) {
+          try {
+            await sendEmailVerification(credential.user, verificationActionSettings())
+          } catch (verificationError) {
+            if (verificationError?.code !== 'auth/too-many-requests') throw verificationError
+          }
+          await signOut(auth)
+          setAuthNotice('Please verify your email before signing in. We sent a new verification link if sending is currently allowed.')
+          setPassword('')
+          return
+        }
       }
       setAuthMode(null)
       setUsername('')
@@ -148,6 +186,7 @@ function App() {
 
     setAuthBusy(true)
     try {
+      await applySelectedPersistence()
       await signInWithPopup(auth, new GoogleAuthProvider())
       setAuthMode(null)
       setPassword('')
@@ -376,6 +415,13 @@ function App() {
                   </div>
                 </>
               )}
+              <label className="auth-remember mt-4">
+                <input type="checkbox" checked={rememberDevice} onChange={(event) => setRememberDevice(event.target.checked)} />
+                <span>
+                  <strong>Remember me on this device</strong>
+                  <small>Leave this off on shared devices. You will be signed out when this browser session ends.</small>
+                </span>
+              </label>
               {authError && <p className="auth-error mt-3" role="alert">{authError}</p>}
               {authNotice && <p className="auth-success mt-3" role="status">{authNotice}</p>}
               <button className="auth-submit mt-6 w-full rounded-full px-5 py-3.5 text-sm font-bold" type="submit" disabled={authBusy || passwordResetBusy}>

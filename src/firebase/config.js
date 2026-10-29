@@ -43,6 +43,9 @@ export let appCheckSetupError = null
 
 if (app && (appCheckSiteKey || localDebugHost) && typeof window !== 'undefined') {
   try {
+    // This is evaluated only in Vite development builds on loopback hosts and
+    // runs before App Check initialization. Production never receives it.
+    if (localDebugHost) globalThis.FIREBASE_APPCHECK_DEBUG_TOKEN = true
     appCheck = initializeAppCheck(app, {
       // On localhost, FIREBASE_APPCHECK_DEBUG_TOKEN swaps this provider for the
       // SDK's debug provider. Production must use the site's registered key.

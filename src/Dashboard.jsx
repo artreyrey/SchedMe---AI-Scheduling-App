@@ -679,7 +679,7 @@ function explainAiError(error) {
     return 'Firebase AI Logic is not enabled for this Firebase project yet. Open Firebase Console → AI Logic and finish enabling the Gemini Developer API.'
   }
   if (code.includes('invalid-schema')) {
-    return 'Firebase rejected the AI response format. Please refresh the page and try again; if it continues, check the browser console for details.'
+    return 'Firebase rejected the AI response format. Please refresh the page and try again.'
   }
   if (code.includes('invalid-content')) {
     return 'The saved chat turns were invalid. Refresh the page to start a clean conversation, then try again.'
@@ -696,7 +696,15 @@ function explainAiError(error) {
   if (code.includes('quota') || code.includes('resource-exhausted') || code.includes('429')) {
     return 'Gemini’s current free-tier quota is used up. Try again later; saved tasks and preferences are still available.'
   }
-  return `Gemini request failed (${error?.code || 'unknown error'}). Check Firebase AI Logic and App Check setup; open the browser console for details. Saved tasks and preferences are still available.`
+  return 'Gemini could not complete that request. Check Firebase AI Logic and App Check setup, then try again. Saved tasks and preferences are still available.'
+}
+
+function safeUiError(error, fallback) {
+  const code = String(error?.code || '').toLowerCase()
+  if ((code.startsWith('operation/') || code.startsWith('ai/local-')) && error?.message) {
+    return String(error.message).slice(0, 400)
+  }
+  return fallback
 }
 
 function openingMessage(user, memory) {
@@ -858,8 +866,8 @@ function AssistantGuide({ assistantName }) {
     <section className="schedme-guide-section">
       <h3>How do I check my allowance?</h3>
       <p>Ask “How many AI requests do I have left?”, “How many tokens are left?”, or “Show my Gemini usage.”</p>
-      <p>{assistantName} will show today’s requests used and remaining, tokens processed, and cached tokens. It also warns you when 30, 20, or 10 requests remain.</p>
-      <small>Google does not provide a fixed free-token balance. Your remaining SchedMe AI requests are the reliable allowance; token numbers describe what has already been processed.</small>
+      <p>{assistantName} will show this device’s planned requests used and remaining, tokens processed, and cached tokens. It also warns you when 30, 20, or 10 planned requests remain.</p>
+      <small>This device counter is a usage guide, not your live Google quota. Firebase AI Logic and Gemini enforce the actual limits, while token numbers describe what has already been processed.</small>
     </section>
 
     <section className="schedme-guide-section schedme-guide-local">
@@ -1384,7 +1392,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     setTaskBusy(true)
     setTaskError('')
     try { await createTask(user.uid, title, category, alsoPriority) }
-    catch (error) { setTaskError(error.code === 'permission-denied' ? 'Task access is blocked. Deploy the provided Firestore rules.' : error.message || 'Could not save this task.') }
+    catch (error) { setTaskError(error.code === 'permission-denied' ? 'Task access is blocked. Deploy the provided Firestore rules.' : safeUiError(error, 'Could not save this task.')) }
     finally { setTaskBusy(false) }
   }
 
@@ -1448,7 +1456,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       if (targetGroup === taskListDrag.sourceGroup) await setTaskListOrder(user.uid, targetGroup, orderedTaskIds)
       else await moveTaskToPriorityList(user.uid, taskId, targetGroup, orderedTaskIds)
     } catch (error) {
-      setTaskError(error.code === 'permission-denied' ? 'Task access is blocked. Check the published Firestore rules.' : error.message || 'Could not move or reorder this task.')
+      setTaskError(error.code === 'permission-denied' ? 'Task access is blocked. Check the published Firestore rules.' : safeUiError(error, 'Could not move or reorder this task.'))
     } finally {
       setTaskBusy(false)
       finishTaskListDrag()
@@ -1474,7 +1482,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       await addPromptToAiMemory(user.uid, prompt, aiMemory, user.displayName || '')
       const savedPrompt = prompt.trim().slice(0, 240)
       setAiMemory((current) => current.preferences.some((item) => item.toLocaleLowerCase() === savedPrompt.toLocaleLowerCase()) ? current : { ...current, preferences: [...current.preferences, savedPrompt] })
-    } catch (error) { setAiMemoryError(error.message || 'Could not save that preference.') }
+    } catch (error) { setAiMemoryError(safeUiError(error, 'Could not save that preference.')) }
     finally { setAiMemoryBusy(false) }
   }
 
@@ -1900,7 +1908,9 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
           aiAllowanceNotice = getAiAllowanceWarning(budgetStatus) || aiAllowanceNotice
           action = await interpretActionIntent(actionContext)
         }
-        catch (error) { console.warn('[SchedMe context actions] Interpreter unavailable; using the existing scheduler.', error?.message || error) }
+        catch (error) {
+          if (import.meta.env.DEV) console.warn('[SchedMe context actions] Interpreter unavailable; using the existing scheduler.', { code: error?.code || 'unknown' })
+        }
       }
 
       if (action) {
@@ -2905,8 +2915,8 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       const hasActions = plan.taskUpdates.length > 0 || plan.scheduleProposal.length > 0
       await persistConversation([...next, { role: 'model', text: withAiAllowanceNotice(correctedResponse.message), ...(hasActions ? { plan } : {}) }], schedulingState, nextProfile, plan.availability)
     } catch (error) {
-      console.error('SchedMe AI request failed', error)
-      setChatError(error?.code ? explainAiError(error) : error?.message || 'SchedMe could not complete that request. Please try again.')
+      if (import.meta.env.DEV) console.error('SchedMe AI request failed', { code: error?.code || 'unknown', name: error?.name || 'Error' })
+      setChatError(error?.code ? explainAiError(error) : 'SchedMe could not complete that request. Please try again.')
       await persistConversation(next, schedulingState, nextProfile)
     } finally { setChatBusy(false) }
   }
@@ -2945,7 +2955,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       const updatedMessages = messages.map((item, index) => index === messageIndex ? { ...item, planApplied: true } : item)
       await persistConversation(updatedMessages, schedulingState, interactionProfile)
     } catch (error) {
-      setPlanError(error.message || 'The plan could not be validated or saved. Review it and try again.')
+      setPlanError(safeUiError(error, 'The plan could not be validated or saved. Review it and try again.'))
     } finally { setPlanBusy(false) }
   }
 
@@ -3035,7 +3045,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       else await createScheduledTask(user.uid, entry)
       setCalendarEditor(null)
     } catch (error) {
-      setCalendarError(error.code === 'permission-denied' ? 'Calendar access is blocked. Check the published Firestore rules.' : error.message || 'Could not save this calendar task.')
+      setCalendarError(error.code === 'permission-denied' ? 'Calendar access is blocked. Check the published Firestore rules.' : safeUiError(error, 'Could not save this calendar task.'))
     } finally {
       setCalendarSaving(false)
     }
@@ -3052,7 +3062,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       setCalendarEditor(null)
       showCalendarNotice('success', `“${deletedTitle}” was deleted.`)
     } catch (error) {
-      setCalendarError(error.code === 'permission-denied' ? 'Task deletion is blocked. Check the published Firestore rules.' : error.message || 'Could not delete this task.')
+      setCalendarError(error.code === 'permission-denied' ? 'Task deletion is blocked. Check the published Firestore rules.' : safeUiError(error, 'Could not delete this task.'))
     } finally {
       setCalendarSaving(false)
     }

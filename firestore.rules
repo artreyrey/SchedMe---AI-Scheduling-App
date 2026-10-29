@@ -1,8 +1,324 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    function isOwner(userId) {
+      return request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.email_verified == true;
+    }
+
+    function validDate(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function validTime(value) {
+      return value is string && value.matches('^([01]\\d|2[0-3]):[0-5]\\d$');
+    }
+
+    function validAiMemory(memory) {
+      return memory is map
+        && memory.keys().hasAll([
+          'chatbotName',
+          'mood',
+          'preferences',
+          'defaultDuration',
+          'greetingStyle'
+        ])
+        && memory.keys().hasOnly([
+          'chatbotName',
+          'mood',
+          'preferences',
+          'defaultDuration',
+          'greetingStyle'
+        ])
+        && memory.chatbotName is string
+        && memory.chatbotName.size() > 0
+        && memory.chatbotName.size() <= 32
+        && memory.mood in ['calm', 'encouraging', 'focused', 'playful']
+        && memory.preferences is list
+        && memory.preferences.size() <= 20
+        && memory.defaultDuration in [30, 45, 60, 90, 120]
+        && memory.greetingStyle in ['friendly', 'short', 'direct'];
+    }
+
+    function validSchedulingState(state) {
+      return state is map
+        && state.keys().hasAll([
+          'activeTaskId',
+          'mode',
+          'date',
+          'startTime',
+          'endTime',
+          'queueMode',
+          'deferredTaskIds',
+          'pendingConflict',
+          'pendingDeletionTaskId',
+          'pendingAction',
+          'lastReferencedTaskId',
+          'lastAction',
+          'lastGreetingDate'
+        ])
+        && state.keys().hasOnly([
+          'activeTaskId',
+          'mode',
+          'date',
+          'startTime',
+          'endTime',
+          'queueMode',
+          'deferredTaskIds',
+          'pendingConflict',
+          'pendingDeletionTaskId',
+          'pendingAction',
+          'lastReferencedTaskId',
+          'lastAction',
+          'lastGreetingDate'
+        ])
+        && (state.activeTaskId == null
+          || (state.activeTaskId is string && state.activeTaskId.size() <= 180))
+        && state.mode in ['schedule', 'move']
+        && (state.date == '' || validDate(state.date))
+        && (state.startTime == '' || validTime(state.startTime))
+        && (state.endTime == '' || validTime(state.endTime))
+        && state.queueMode is bool
+        && state.deferredTaskIds is list
+        && state.deferredTaskIds.size() <= 100
+        && (state.pendingConflict == null || state.pendingConflict is map)
+        && (state.pendingDeletionTaskId == null
+          || (state.pendingDeletionTaskId is string
+            && state.pendingDeletionTaskId.size() <= 180))
+        && (state.pendingAction == null || state.pendingAction is map)
+        && (state.lastReferencedTaskId == null
+          || (state.lastReferencedTaskId is string
+            && state.lastReferencedTaskId.size() <= 180))
+        && (state.lastAction == null || state.lastAction is map)
+        && state.lastGreetingDate is string
+        && (state.lastGreetingDate == '' || validDate(state.lastGreetingDate));
+    }
+
+    function validInteractionProfile(profile) {
+      return profile is map
+        && profile.keys().hasAll([
+          'messageCount',
+          'compactCommandCount',
+          'averageMessageLength',
+          'prefersConcise'
+        ])
+        && profile.keys().hasOnly([
+          'messageCount',
+          'compactCommandCount',
+          'averageMessageLength',
+          'prefersConcise'
+        ])
+        && profile.messageCount is number
+        && profile.messageCount >= 0
+        && profile.compactCommandCount is number
+        && profile.compactCommandCount >= 0
+        && profile.averageMessageLength is number
+        && profile.averageMessageLength >= 0
+        && profile.averageMessageLength <= 2000
+        && profile.prefersConcise is bool;
+    }
+
+    function validUserDocument(data) {
+      return data.keys().hasOnly([
+          'username',
+          'aiMemory',
+          'updatedAt',
+          'chatHistory',
+          'schedulingState',
+          'lastGreetingDate',
+          'interactionProfile',
+          'availability',
+          'conversationUpdatedAt',
+          'operationHeadId',
+          'operationUpdatedAt'
+        ])
+        && (!('username' in data)
+          || (data.username is string && data.username.size() <= 100))
+        && (!('aiMemory' in data) || validAiMemory(data.aiMemory))
+        && (!('updatedAt' in data) || data.updatedAt is timestamp)
+        && (!('chatHistory' in data)
+          || (data.chatHistory is list && data.chatHistory.size() <= 120))
+        && (!('schedulingState' in data)
+          || validSchedulingState(data.schedulingState))
+        && (!('lastGreetingDate' in data)
+          || (data.lastGreetingDate is string
+            && (data.lastGreetingDate == '' || validDate(data.lastGreetingDate))))
+        && (!('interactionProfile' in data)
+          || validInteractionProfile(data.interactionProfile))
+        && (!('availability' in data)
+          || (data.availability is list && data.availability.size() <= 28))
+        && (!('conversationUpdatedAt' in data)
+          || data.conversationUpdatedAt is timestamp)
+        && (!('operationHeadId' in data)
+          || data.operationHeadId == null
+          || (data.operationHeadId is string && data.operationHeadId.size() <= 180))
+        && (!('operationUpdatedAt' in data)
+          || data.operationUpdatedAt is timestamp);
+    }
+
+    function validTaskSchedule(data) {
+      return (
+          !('date' in data)
+          && !('startTime' in data)
+          && !('endTime' in data)
+        ) || (
+          'date' in data
+          && 'startTime' in data
+          && 'endTime' in data
+          && validDate(data.date)
+          && validTime(data.startTime)
+          && validTime(data.endTime)
+          && data.startTime < data.endTime
+        );
+    }
+
+    function validTaskDocument(data) {
+      return data.keys().hasAll(['title', 'completed', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'title',
+          'category',
+          'urgent',
+          'important',
+          'completed',
+          'color',
+          'colorMode',
+          'showInInbox',
+          'source',
+          'date',
+          'startTime',
+          'endTime',
+          'orderFree',
+          'orderUrgent',
+          'orderImportant',
+          'orderFlexible',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.title is string
+        && data.title.size() > 0
+        && data.title.size() <= 240
+        && data.completed is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && (!('category' in data)
+          || data.category in ['free', 'urgent', 'important', 'notUrgent'])
+        && (!('urgent' in data) || data.urgent is bool)
+        && (!('important' in data) || data.important is bool)
+        && (!('color' in data)
+          || (data.color is string
+            && (data.color == '' || data.color.matches('^#[0-9a-fA-F]{6}$'))))
+        && (!('colorMode' in data)
+          || data.colorMode in ['automatic', 'manual'])
+        && (!('showInInbox' in data) || data.showInInbox is bool)
+        && (!('source' in data)
+          || (data.source is string
+            && data.source.size() <= 60
+            && data.source.matches('^[a-z0-9-]+$')))
+        && (!('orderFree' in data)
+          || (data.orderFree is int && data.orderFree >= 0 && data.orderFree < 500))
+        && (!('orderUrgent' in data)
+          || (data.orderUrgent is int && data.orderUrgent >= 0 && data.orderUrgent < 500))
+        && (!('orderImportant' in data)
+          || (data.orderImportant is int
+            && data.orderImportant >= 0
+            && data.orderImportant < 500))
+        && (!('orderFlexible' in data)
+          || (data.orderFlexible is int
+            && data.orderFlexible >= 0
+            && data.orderFlexible < 500))
+        && validTaskSchedule(data);
+    }
+
+    function validNewTask(data) {
+      return data.keys().hasAll([
+          'title',
+          'category',
+          'urgent',
+          'important',
+          'completed',
+          'color',
+          'colorMode',
+          'createdAt',
+          'updatedAt'
+        ])
+        && validTaskDocument(data);
+    }
+
+    function validOperationDocument(data, operationId) {
+      return data.keys().hasAll([
+          'type',
+          'description',
+          'requestId',
+          'previousOperationId',
+          'changes',
+          'undone',
+          'committedAt'
+        ])
+        && data.keys().hasOnly([
+          'type',
+          'description',
+          'requestId',
+          'previousOperationId',
+          'changes',
+          'undone',
+          'committedAt',
+          'undoneAt'
+        ])
+        && data.type is string
+        && data.type.size() > 0
+        && data.type.size() <= 40
+        && data.description is string
+        && data.description.size() <= 300
+        && data.requestId is string
+        && data.requestId == operationId
+        && data.requestId.size() <= 180
+        && (data.previousOperationId == null
+          || (data.previousOperationId is string
+            && data.previousOperationId.size() <= 180))
+        && data.changes is list
+        && data.changes.size() > 0
+        && data.changes.size() <= 20
+        && data.undone is bool
+        && data.committedAt is timestamp
+        && (!('undoneAt' in data) || data.undoneAt is timestamp);
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+        && validUserDocument(request.resource.data);
+
+      match /tasks/{taskId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && validNewTask(request.resource.data);
+        allow update: if isOwner(userId)
+          && validTaskDocument(request.resource.data)
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isOwner(userId);
+      }
+
+      match /operations/{operationId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && validOperationDocument(request.resource.data, operationId)
+          && request.resource.data.undone == false
+          && !('undoneAt' in request.resource.data);
+        allow update: if isOwner(userId)
+          && validOperationDocument(request.resource.data, operationId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['undone', 'undoneAt'])
+          && resource.data.undone == false
+          && request.resource.data.undone == true
+          && request.resource.data.undoneAt is timestamp;
+      }
+
+      // No other user-owned collections or deeper nested documents are valid.
+      match /{document=**} {
+        allow read, write: if false;
+      }
     }
   }
 }
