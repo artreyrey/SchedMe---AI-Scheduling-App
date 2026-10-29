@@ -3018,6 +3018,7 @@ button:not(:disabled):active,
 .schedme-chathead-layer.is-left .schedme-chat-popup { --schedme-popup-shift: -18px; transform-origin: left center; }
 .schedme-chat-popup.is-opening { animation: schedme-chat-popup-in 320ms cubic-bezier(.16,1,.3,1) both; }
 .schedme-chat-popup.is-closing { pointer-events: none; animation: schedme-chat-popup-out 210ms cubic-bezier(.4,0,.7,.2) both; }
+.schedme-chat-popup.is-resizing { user-select: none; transition: none; }
 .schedme-chat-popup-header { display: flex; min-height: 4.15rem; align-items: center; gap: .68rem; padding: .72rem .75rem; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-soft) 82%, transparent); }
 .schedme-chat-popup-avatar { display: grid; width: 2.35rem; height: 2.35rem; flex: 0 0 auto; place-items: center; border-radius: .8rem; background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent-deep)); color: var(--schedme-mark-ink); box-shadow: inset 0 1px 0 rgba(255,255,255,.28); font-weight: 800; }
 .schedme-chat-popup-identity { display: grid; min-width: 0; flex: 1; gap: .08rem; }
@@ -3066,6 +3067,24 @@ button:not(:disabled):active,
 .schedme-guide-notice { border-color: color-mix(in srgb, #d68c62 34%, var(--line)); background: color-mix(in srgb, #d68c62 7%, var(--surface-soft)); }
 .schedme-guide-local { border-color: color-mix(in srgb, #5eaa86 34%, var(--line)); background: color-mix(in srgb, #5eaa86 7%, var(--surface-soft)); }
 .schedme-guide-ending { margin: .05rem .25rem .35rem; color: var(--muted); font-size: .64rem; line-height: 1.6; text-align: center; }
+.schedme-chat-resize-handle { position: absolute; z-index: 12; display: block; touch-action: none; }
+.schedme-chat-resize-handle.is-n, .schedme-chat-resize-handle.is-s { right: .85rem; left: .85rem; height: .6rem; cursor: ns-resize; }
+.schedme-chat-resize-handle.is-n { top: 0; }
+.schedme-chat-resize-handle.is-s { bottom: 0; }
+.schedme-chat-resize-handle.is-e, .schedme-chat-resize-handle.is-w { top: .85rem; bottom: .85rem; width: .6rem; cursor: ew-resize; }
+.schedme-chat-resize-handle.is-e { right: 0; }
+.schedme-chat-resize-handle.is-w { left: 0; }
+.schedme-chat-resize-handle.is-ne, .schedme-chat-resize-handle.is-nw, .schedme-chat-resize-handle.is-se, .schedme-chat-resize-handle.is-sw { width: 1rem; height: 1rem; }
+.schedme-chat-resize-handle.is-ne { top: 0; right: 0; cursor: nesw-resize; }
+.schedme-chat-resize-handle.is-nw { top: 0; left: 0; cursor: nwse-resize; }
+.schedme-chat-resize-handle.is-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.schedme-chat-resize-handle.is-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.schedme-chat-resize-handle.is-ne::after, .schedme-chat-resize-handle.is-nw::after, .schedme-chat-resize-handle.is-se::after, .schedme-chat-resize-handle.is-sw::after { position: absolute; width: .38rem; height: .38rem; border-color: color-mix(in srgb, var(--accent) 38%, transparent); content: ''; opacity: .58; transition: border-color 160ms ease, opacity 160ms ease; }
+.schedme-chat-resize-handle.is-ne::after { top: .22rem; right: .22rem; border-top: 1px solid; border-right: 1px solid; }
+.schedme-chat-resize-handle.is-nw::after { top: .22rem; left: .22rem; border-top: 1px solid; border-left: 1px solid; }
+.schedme-chat-resize-handle.is-se::after { right: .22rem; bottom: .22rem; border-right: 1px solid; border-bottom: 1px solid; }
+.schedme-chat-resize-handle.is-sw::after { bottom: .22rem; left: .22rem; border-bottom: 1px solid; border-left: 1px solid; }
+.schedme-chat-resize-handle:hover::after { border-color: var(--accent); opacity: 1; }
 @keyframes schedme-chathead-pulse { 0% { opacity: .72; transform: scale(.84); } 72%, 100% { opacity: 0; transform: scale(1.38); } }
 @keyframes schedme-chathead-settle { 0% { transform: scale(1.12) rotate(var(--schedme-chathead-tilt)); } 52% { transform: scale(.96) rotate(-1.5deg); } 76% { transform: scale(1.025) rotate(.6deg); } 100% { transform: scale(1) rotate(0); } }
 @keyframes schedme-chat-popup-in { from { opacity: 0; filter: blur(5px); transform: translate3d(var(--schedme-popup-shift), 10px, 0) scale(.93); } 70% { opacity: 1; filter: blur(0); transform: translate3d(-2px, -1px, 0) scale(1.008); } to { opacity: 1; filter: blur(0); transform: translate3d(0, 0, 0) scale(1); } }

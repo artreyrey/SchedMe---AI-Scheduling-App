@@ -25,6 +25,7 @@ import { deleteUserVoiceMessages, loadVoiceMessage, saveVoiceMessage } from './s
 import { commitTaskOperation, createTaskDocumentId, newOperationRequestId, undoLastTaskOperation } from './services/taskOperationService.js'
 import { consumeAiRequestBudget, getAiRequestBudgetStatus } from './services/aiRequestBudget.js'
 import { planTaskListDrop, sortTasksForGroup } from './taskListOrder.js'
+import { CHAT_RESIZE_DIRECTIONS, clampChatRectangle, resizeChatRectangle } from './chatResize.js'
 import ThemePicker from './components/ThemePicker.jsx'
 
 const groups = [
@@ -938,6 +939,8 @@ function FloatingAssistant({
   const [guideOpen, setGuideOpen] = useState(false)
   const [guideMounted, setGuideMounted] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [manualRectangle, setManualRectangle] = useState(null)
+  const [resizing, setResizing] = useState(false)
   const [dragPoint, setDragPoint] = useState(null)
   const [settling, setSettling] = useState(false)
   const [settleTilt, setSettleTilt] = useState(0)
@@ -957,11 +960,13 @@ function FloatingAssistant({
   const [viewport, setViewport] = useState(() => typeof window === 'undefined' ? { width: 800, height: 800 } : { width: window.innerWidth, height: window.innerHeight })
   const [lastSeenModelCount, setLastSeenModelCount] = useState(() => messages.filter((message) => message.role === 'model').length)
   const rootRef = useRef(null)
+  const popupRef = useRef(null)
   const transcriptRef = useRef(null)
   const guideRef = useRef(null)
   const guideButtonRef = useRef(null)
   const resizeButtonRef = useRef(null)
   const dragRef = useRef(null)
+  const resizeRef = useRef(null)
   const suppressClickRef = useRef(false)
   const modelMessageCount = messages.filter((message) => message.role === 'model').length
   const hasUnreadReply = !open && modelMessageCount > lastSeenModelCount
@@ -991,6 +996,10 @@ function FloatingAssistant({
   useEffect(() => {
     try { window.localStorage.setItem('schedme-chathead-position', JSON.stringify(position)) } catch { /* Position persistence is optional. */ }
   }, [position])
+
+  useEffect(() => {
+    setManualRectangle((current) => current ? clampChatRectangle(current, viewport) : null)
+  }, [viewport])
 
   useEffect(() => {
     if (open) {
@@ -1116,6 +1125,39 @@ function FloatingAssistant({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
+  function beginResize(event, direction) {
+    if (event.button !== 0 || !popupRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    const bounds = popupRef.current.getBoundingClientRect()
+    const rectangle = clampChatRectangle({ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height }, viewport)
+    resizeRef.current = { pointerId: event.pointerId, direction, startX: event.clientX, startY: event.clientY, rectangle }
+    setManualRectangle(rectangle)
+    setExpanded(false)
+    setResizing(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function resizePopup(event) {
+    const activeResize = resizeRef.current
+    if (!activeResize || activeResize.pointerId !== event.pointerId) return
+    event.preventDefault()
+    setManualRectangle(resizeChatRectangle(activeResize, event.clientX, event.clientY, viewport))
+  }
+
+  function finishResize(event) {
+    const activeResize = resizeRef.current
+    if (!activeResize || activeResize.pointerId !== event.pointerId) return
+    resizeRef.current = null
+    setResizing(false)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  function toggleExpandedChat() {
+    setManualRectangle(null)
+    setExpanded((current) => !current)
+  }
+
   function toggleChat() {
     if (suppressClickRef.current) {
       suppressClickRef.current = false
@@ -1133,15 +1175,15 @@ function FloatingAssistant({
     top: headY,
     '--schedme-chathead-tilt': `${dragPoint?.tilt ?? settleTilt}deg`,
   }
-  const popupStyle = { top: popupTop, left: popupLeft, width: popupWidth, height: popupHeight }
+  const popupStyle = manualRectangle || { top: popupTop, left: popupLeft, width: popupWidth, height: popupHeight }
 
   return <div className={`schedme-chathead-layer is-${popupSide} ${open ? 'is-open' : 'is-closed'}`} ref={rootRef}>
-    {popupMounted && <section className={`schedme-chat-popup ${open ? 'is-opening' : 'is-closing'} ${expanded ? 'is-expanded' : 'is-compact'}`} style={popupStyle} role="dialog" aria-modal="false" aria-label={`Chat with ${assistantName}`}>
+    {popupMounted && <section ref={popupRef} className={`schedme-chat-popup ${open ? 'is-opening' : 'is-closing'} ${expanded ? 'is-expanded' : 'is-compact'} ${resizing ? 'is-resizing' : ''}`} style={popupStyle} role="dialog" aria-modal="false" aria-label={`Chat with ${assistantName}`}>
       <header className="schedme-chat-popup-header">
         <span className="schedme-chat-popup-avatar" aria-hidden="true">{assistantName.charAt(0).toUpperCase()}</span>
         <div className="schedme-chat-popup-identity"><strong>{assistantName}</strong><small>{assistantMood} planning companion</small></div>
         <div className="schedme-chat-popup-actions">
-          <button ref={resizeButtonRef} type="button" className={expanded ? 'is-active' : ''} onClick={() => setExpanded((current) => !current)} aria-pressed={expanded} aria-label={expanded ? `Restore compact ${assistantName} chat` : `Expand ${assistantName} chat`} title={expanded ? 'Restore compact chat' : 'Expand chat'}><ChatSizeIcon expanded={expanded} /></button>
+          <button ref={resizeButtonRef} type="button" className={expanded ? 'is-active' : ''} onClick={toggleExpandedChat} aria-pressed={expanded} aria-label={expanded ? `Restore compact ${assistantName} chat` : `Expand ${assistantName} chat`} title={expanded ? 'Restore compact chat' : 'Expand chat'}><ChatSizeIcon expanded={expanded} /></button>
           <button ref={guideButtonRef} type="button" className={guideOpen ? 'is-active' : ''} onClick={() => setGuideOpen((current) => !current)} aria-expanded={guideOpen} aria-controls="schedme-assistant-guide" aria-label={guideOpen ? `Close ${assistantName} guide` : `Open ${assistantName} guide`} title="How to use SchedMe AI">?</button>
           <button type="button" onClick={() => setOpen(false)} aria-label="Close SchedMe chat">×</button>
         </div>
@@ -1165,6 +1207,17 @@ function FloatingAssistant({
           </form>
           {chatError && <p className="schedme-chat-popup-error" role="alert">{chatError}</p>}
         </>}
+      {CHAT_RESIZE_DIRECTIONS.map((direction) => <span
+        key={direction}
+        className={`schedme-chat-resize-handle is-${direction}`}
+        aria-hidden="true"
+        title={`Drag ${direction.toUpperCase()} edge to resize`}
+        onPointerDown={(event) => beginResize(event, direction)}
+        onPointerMove={resizePopup}
+        onPointerUp={finishResize}
+        onPointerCancel={finishResize}
+        onLostPointerCapture={finishResize}
+      />)}
     </section>}
     <button
       type="button"
