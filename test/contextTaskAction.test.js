@@ -28,6 +28,29 @@ test('routes task mutations and pending clarifications through Gemini', () => {
   assert.equal(shouldInterpretContextTaskAction({ text: 'Cancel the drawing meeting' }), true)
   assert.equal(shouldInterpretContextTaskAction({ text: 'yes', schedulingState: { pendingAction: { intent: 'delete_task' } } }), true)
   assert.equal(shouldInterpretContextTaskAction({ text: 'hello' }), false)
+  assert.equal(shouldInterpretContextTaskAction({ text: 'mark them undone' }), true)
+  assert.equal(shouldInterpretContextTaskAction({ text: "change their category to What's on my mind" }), true)
+})
+
+test('plans grouped completion, reopening, priority, and color updates', () => {
+  const groupTarget = { taskId: '', taskIds: ['drawing', 'thesis'], query: '' }
+  const grouped = (intent, patch = {}) => action(intent, { scope: 'matching', target: groupTarget, patch })
+  const completion = planContextTaskAction({ action: grouped('complete_task'), tasks })
+  assert.equal(completion.status, 'ready_many')
+  assert.deepEqual(completion.tasksToUpdate.map((task) => task.id), ['drawing', 'thesis'])
+
+  const completedTasks = tasks.map((task) => ({ ...task, completed: true }))
+  const reopening = planContextTaskAction({ action: grouped('reopen_task'), tasks: completedTasks })
+  assert.equal(reopening.status, 'ready_many')
+  assert.equal(reopening.completed, false)
+
+  const priority = planContextTaskAction({ action: grouped('change_priority', { category: 'urgentImportant' }), tasks })
+  assert.equal(priority.status, 'ready_many')
+  assert.equal(priority.label, 'urgent and important')
+
+  const color = planContextTaskAction({ action: grouped('change_color', { color: '#EF4444' }), tasks })
+  assert.equal(color.status, 'ready_many')
+  assert.equal(color.color, '#ef4444')
 })
 
 test('plans unscheduled and scheduled task creation', () => {

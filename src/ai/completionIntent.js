@@ -1,11 +1,12 @@
 import { findTaskMatch, getMondayWeek, parseTaskDate } from './schedulingIntent.js'
 
-const INCOMPLETE_LANGUAGE = /\b(?:unmark|reopen|unfinished|incomplete)\b|\b(?:not|isn['â€™]?t|aren['â€™]?t)\s+(?:done|complete|completed)\b|\b(?:active|open)\s+again\b/i
+const INCOMPLETE_LANGUAGE = /\b(?:unmark|reopen|unfinished|incomplete|undone)\b|\b(?:not|isn['â€™]?t|aren['â€™]?t)\s+(?:done|complete|completed)\b|\b(?:active|open)\s+again\b/i
+const WEEKDAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 
 export function isTaskCompletionMessage(value) {
   const text = String(value || '').trim().toLocaleLowerCase()
   if (!text) return false
-  return /\b(?:mark|set|make|unmark)\b.{0,70}\b(?:done|complete|completed|incomplete|unfinished)\b/i.test(text)
+  return /\b(?:mark|set|make|unmark)\b.{0,70}\b(?:done|complete|completed|incomplete|unfinished|undone)\b/i.test(text)
     || /\breopen\b.{0,70}\b(?:task|tasks|it|this|that|them)\b/i.test(text)
     || /\b(?:task|tasks|it|this|that|them|[a-z][a-z0-9'-]*)\s+(?:is|was|are)\s+(?:already\s+)?(?:done|complete|completed|incomplete|unfinished)\b/i.test(text)
     || /\b(?:i(?:'ve| have)?\s+)?(?:finished|completed|did)\b.{0,50}\b(?:task|it|this|that|[a-z][a-z0-9'-]*)\b/i.test(text)
@@ -20,16 +21,22 @@ function isPlainWeekdayReference(text, day) {
 
 export function parseTaskCompletionRequest(value, weekDays = getMondayWeek(), now = new Date()) {
   const text = String(value || '').trim()
-  if (!isTaskCompletionMessage(text)) return { isCompletion: false, isBulk: false, completed: true, day: null }
+  if (!isTaskCompletionMessage(text)) return { isCompletion: false, isBulk: false, completed: true, day: null, days: [] }
 
   const completed = !INCOMPLETE_LANGUAGE.test(text)
   let day = parseTaskDate(text, now, weekDays)
   if (day && isPlainWeekdayReference(text, day) && weekDays[day.index]) {
     day = { ...weekDays[day.index], token: day.token }
   }
+  const weekdayDays = WEEKDAY_NAMES.flatMap((weekday, index) => {
+    if (!new RegExp(`\\b${weekday}\\b`, 'i').test(text) || !weekDays[index]) return []
+    return [{ ...weekDays[index], label: weekDays[index].label || weekday[0].toUpperCase() + weekday.slice(1), token: weekday }]
+  })
+  const days = weekdayDays.length > 1 ? weekdayDays : day ? [day] : []
+  if (days.length) day = days[0]
   const allTasks = /\b(?:all|every)\b.{0,30}\b(?:my\s+)?tasks?\b|\b(?:all|every)\s+of\s+(?:my\s+)?(?:tasks?|them)\b/i.test(text)
-  const datedTasks = Boolean(day && /\btasks\b|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)['â€™]s\s+tasks?\b/i.test(text))
-  return { isCompletion: true, isBulk: allTasks || datedTasks, completed, day }
+  const datedTasks = Boolean(days.length && /\btasks\b|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)['â€™]s\s+tasks?\b/i.test(text))
+  return { isCompletion: true, isBulk: allTasks || datedTasks, completed, day, days }
 }
 
 function taskIdsFromLastAction(lastAction) {
@@ -74,7 +81,7 @@ export function applyTaskCompletionContext(request, value, previousRequest, last
 function cleanTaskReference(value) {
   return String(value || '').trim()
     .replace(/^(?:please\s+)?(?:mark|set|make|unmark|reopen)\s+(?:the\s+)?/i, '')
-    .replace(/\s+(?:as\s+)?(?:not\s+)?(?:done|complete|completed|incomplete|unfinished)(?:\s+again)?[.!?\s]*$/i, '')
+    .replace(/\s+(?:as\s+)?(?:not\s+)?(?:done|complete|completed|incomplete|unfinished|undone)(?:\s+again)?[.!?\s]*$/i, '')
     .replace(/^[\s:'"â€œâ€â€˜â€™-]+|[\s,.;:!?"â€œâ€â€˜â€™-]+$/g, '')
     .trim()
 }

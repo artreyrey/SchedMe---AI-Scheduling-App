@@ -25,6 +25,20 @@ test('parses bulk completion for a weekday in the visible week', () => {
   assert.equal(request.day.key, '2026-10-19')
 })
 
+test('parses completion and reopening across multiple weekdays', () => {
+  const now = new Date(2026, 9, 29, 12)
+  const weekDays = getMondayWeek(0, now)
+  const done = parseTaskCompletionRequest('can you make all monday and tuesday task mark as done?', weekDays, now)
+  const reopened = parseTaskCompletionRequest('mark all Monday and Tuesday tasks as undone', weekDays, now)
+  assert.equal(done.isCompletion, true)
+  assert.equal(done.isBulk, true)
+  assert.equal(done.completed, true)
+  assert.deepEqual(done.days.map((day) => day.key), ['2026-10-26', '2026-10-27'])
+  assert.equal(reopened.isBulk, true)
+  assert.equal(reopened.completed, false)
+  assert.deepEqual(reopened.days.map((day) => day.label), ['Monday', 'Tuesday'])
+})
+
 test('calculates compact relative dates for bulk completion', () => {
   const now = new Date(2026, 9, 24, 12)
   const request = parseTaskCompletionRequest('mark every task 4days fromnow complete', getMondayWeek(0, now), now)

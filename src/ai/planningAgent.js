@@ -2,6 +2,7 @@ import { getAI, getGenerativeModel, GoogleAIBackend, Schema } from 'firebase/ai'
 import { app, appCheck } from '../firebase/config.js'
 import { DEFAULT_AI_MEMORY } from '../services/aiMemoryService.js'
 import personalityPolicy from './PERSONALITY.md?raw'
+import { recordAiUsageMetadata } from './usageTelemetry.js'
 
 const moodInstructions = {
   calm: 'Use a calm, reassuring tone. Keep encouragement gentle.',
@@ -57,6 +58,7 @@ export async function askPlanningAssistant({ message, history, tasks, memory = D
     instruction: 'Return taskUpdates only when the user explicitly asks to change priority. Scheduling never requires a priority update. Do not ask for full-week availability. Ask only for a missing task, day, or time. A direct exact task-time command authorizes that placement; return it in scheduleProposal and set applyImmediately=true. For broader or uncertain requests set applyImmediately=false. If a requested slot conflicts with a saved task, ask which task should move and return no proposal. Use task IDs exactly as supplied. Never claim a write is complete; the app confirms only after Firebase saves it. Stay within the scheduling scope defined by the personality policy.',
   }
   const result = await chat.sendMessage(JSON.stringify(requestContext))
+  recordAiUsageMetadata(result.response.usageMetadata)
   let response
   try { response = JSON.parse(result.response.text()) }
   catch { throw new Error('Gemini returned an unreadable response. Please try again.') }

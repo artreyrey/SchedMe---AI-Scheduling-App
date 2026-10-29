@@ -17,8 +17,8 @@ export function shouldInterpretContextTaskAction({ text, schedulingState = {} } 
   const value = String(text || '')
   return /\b(create|add|new)\b.*\b(task|todo)\b/i.test(value)
     || /^\s*(?:please\s+)?(?:add|create|remember|remind me to|i need to|i have to)\b/i.test(value)
-    || /\b(complete|completed|finish|finished|done|reopen|uncomplete|not done)\b/i.test(value)
-    || /\b(urgent|important|priority|prioritize|flexible|not urgent)\b/i.test(value)
+    || /\b(complete|completed|finish|finished|done|undone|reopen|uncomplete|not done)\b/i.test(value)
+    || /\b(urgent|important|priority|prioritize|category|categorize|classify|flexible|unclassified|not urgent|what['’]?s on my mind)\b/i.test(value)
     || new RegExp(`\\b(colou?r|${COLOR_WORDS})\\b`, 'i').test(value)
     || /\b(unschedule|delete|erase)\b/i.test(value)
     || (/^\s*(?:please\s+)?(?:remove|cancel)\b/i.test(value) && !/^\s*cancel[.!\s]*$/i.test(value))
@@ -69,6 +69,54 @@ export function planContextTaskAction({ action, tasks = [], schedulingState = {}
     if (!matchedTasks.length || matchedTasks.length !== ids.length) return { status: 'clarify', reason: 'missing_task', matches: [], missingFields: ['task'] }
     if (!action.confirmed) return { status: 'confirm', operation: 'delete_many', tasks: matchedTasks }
     return { status: 'ready', operation: 'delete_many', tasks: matchedTasks }
+  }
+
+  if (action.scope !== 'single' && ['complete_task', 'reopen_task', 'change_priority', 'change_color'].includes(action.intent)) {
+    const ids = [...new Set(action.target?.taskIds || [])]
+    const matchedTasks = ids.map((id) => tasks.find((task) => task.id === id)).filter(Boolean)
+    if (!matchedTasks.length || matchedTasks.length !== ids.length) {
+      return { status: 'clarify', reason: 'missing_task', matches: [], missingFields: ['task'] }
+    }
+
+    if (action.intent === 'complete_task' || action.intent === 'reopen_task') {
+      const completed = action.intent === 'complete_task'
+      const tasksToUpdate = matchedTasks.filter((task) => Boolean(task.completed) !== completed)
+      return {
+        status: tasksToUpdate.length ? 'ready_many' : 'unchanged_many',
+        operation: 'completion',
+        tasks: matchedTasks,
+        tasksToUpdate,
+        completed,
+      }
+    }
+
+    if (action.intent === 'change_priority') {
+      const priority = categoryConfig(patch.category)
+      if (!priority) return { status: 'clarify', reason: 'missing_priority', tasks: matchedTasks, missingFields: ['category'] }
+      const tasksToUpdate = matchedTasks.filter((task) => task.category !== priority.category
+        || Boolean(task.urgent) !== (priority.category === 'urgent' || priority.alsoPriority)
+        || Boolean(task.important) !== (priority.category === 'important' || priority.alsoPriority))
+      return {
+        status: tasksToUpdate.length ? 'ready_many' : 'unchanged_many',
+        operation: 'priority',
+        tasks: matchedTasks,
+        tasksToUpdate,
+        ...priority,
+      }
+    }
+
+    if (!/^#[0-9a-f]{6}$/i.test(patch.color || '')) {
+      return { status: 'clarify', reason: 'missing_color', tasks: matchedTasks, missingFields: ['color'] }
+    }
+    const color = patch.color.toLowerCase()
+    const tasksToUpdate = matchedTasks.filter((task) => String(task.color || '').toLowerCase() !== color)
+    return {
+      status: tasksToUpdate.length ? 'ready_many' : 'unchanged_many',
+      operation: 'color',
+      tasks: matchedTasks,
+      tasksToUpdate,
+      color,
+    }
   }
   if (action.scope !== 'single') return { status: 'unsupported' }
 

@@ -18,6 +18,8 @@ import { getTrustedRecentSlot, planContextSchedulingAction, shouldInterpretConte
 import { planContextAvailabilityAction } from './ai/availabilityAction.js'
 import { planContextTaskAction, shouldInterpretContextTaskAction } from './ai/contextTaskAction.js'
 import { confirmedPendingAction, createPendingAction, mergePendingAction } from './ai/pendingAction.js'
+import { getLocalCommandRoute } from './ai/localCommandRouting.js'
+import { recordLocalCommandBypass } from './ai/usageTelemetry.js'
 import { deleteUserVoiceMessages, loadVoiceMessage, saveVoiceMessage } from './services/voiceMessageStore.js'
 import { commitTaskOperation, createTaskDocumentId, newOperationRequestId, undoLastTaskOperation } from './services/taskOperationService.js'
 import { consumeAiRequestBudget } from './services/aiRequestBudget.js'
@@ -1619,6 +1621,13 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
 
     const preliminary = parseSchedulingInput(text, tasks, weekDays, schedulingState.activeTaskId, aiMemory.defaultDuration || 60)
     const bulkMoveRequest = parseConversationalBulkMoveRequest(text, messages)
+    const namedTaskMoveRequest = parseNamedTaskMoveRequest(text, tasks, weekDays)
+    const previousUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+    const previousCompletionRequest = parseTaskCompletionRequest(previousUserMessage?.text, weekDays)
+    let completionRequest = parseTaskCompletionRequest(text, weekDays)
+    completionRequest = applyTaskCompletionContext(completionRequest, text, previousCompletionRequest, schedulingState.lastAction)
+    const namedCompletionRequest = parseNamedTaskCompletionRequest(text, tasks)
+    const namedDeletionRequest = parseNamedTaskDeletionRequest(text, tasks)
     const nextProfile = learnInteractionStyle(interactionProfile, text, preliminary.isCompact)
     let voiceMessage = null
     if (!directMessage && voiceDraft) {
@@ -1716,9 +1725,11 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         } else if (plan.reason === 'missing_title') {
           await complete('What should I call the new task?', pendingState)
         } else if (plan.reason === 'missing_priority') {
-          await complete(`Should “${plan.task.title}” be urgent, important, urgent and important, flexible, or unclassified?`, pendingState)
+          await complete(plan.task
+            ? `Should “${plan.task.title}” be urgent, important, urgent and important, flexible, or unclassified?`
+            : 'Should those tasks be urgent, important, urgent and important, flexible, or unclassified?', pendingState)
         } else if (plan.reason === 'missing_color') {
-          await complete(`What color should I use for “${plan.task.title}”?`, pendingState)
+          await complete(plan.task ? `What color should I use for “${plan.task.title}”?` : 'What color should I use for those tasks?', pendingState)
         } else if (plan.reason === 'missing_date') {
           await complete('What day should I schedule the new task?', pendingState)
         } else if (plan.reason === 'missing_time') {
@@ -1746,6 +1757,53 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         if (plan.operation === 'color') message = `“${plan.task.title}” already uses that color.`
         if (plan.operation === 'unschedule') message = `“${plan.task.title}” is already off the calendar.`
         await complete(message, finishedTaskActionState(plan.task.id))
+        return true
+      }
+
+      if (plan.status === 'unchanged_many') {
+        let message = `All ${plan.tasks.length} tasks are already unchanged.`
+        if (plan.operation === 'completion') message = `All ${plan.tasks.length} tasks are already ${plan.completed ? 'done' : 'active'}.`
+        if (plan.operation === 'priority') message = `All ${plan.tasks.length} tasks are already ${plan.label}.`
+        if (plan.operation === 'color') message = `All ${plan.tasks.length} tasks already use ${plan.color}.`
+        await complete(message, finishedTaskActionState(plan.tasks.at(-1)?.id || ''))
+        return true
+      }
+
+      if (plan.status === 'ready_many') {
+        const changes = plan.tasksToUpdate.map((task) => {
+          if (plan.operation === 'completion') return { kind: 'update', taskId: task.id, data: { completed: plan.completed } }
+          if (plan.operation === 'priority') {
+            return {
+              kind: 'update',
+              taskId: task.id,
+              data: {
+                category: plan.category,
+                urgent: plan.category === 'urgent' || plan.alsoPriority,
+                important: plan.category === 'important' || plan.alsoPriority,
+              },
+            }
+          }
+          return { kind: 'update', taskId: task.id, data: { color: plan.color, colorMode: 'manual' } }
+        })
+        await commitTaskOperation(user.uid, {
+          requestId: operationRequestId,
+          type: `${plan.operation}-many`,
+          description: plan.operation === 'completion'
+            ? `${plan.completed ? 'Completed' : 'Reopened'} ${changes.length} tasks`
+            : `Changed ${plan.operation} for ${changes.length} tasks`,
+          changes,
+        })
+        const unchangedCount = plan.tasks.length - plan.tasksToUpdate.length
+        const unchangedNote = unchangedCount ? ` ${unchangedCount} ${unchangedCount === 1 ? 'was' : 'were'} already unchanged.` : ''
+        let message = `Done—I updated ${changes.length} tasks.${unchangedNote}`
+        if (plan.operation === 'completion') {
+          message = plan.completed
+            ? `Done—I marked ${changes.length} ${changes.length === 1 ? 'task' : 'tasks'} as done.${unchangedNote}`
+            : `Done—I reopened ${changes.length} ${changes.length === 1 ? 'task' : 'tasks'}.${unchangedNote}`
+        }
+        if (plan.operation === 'priority') message = `Done—I changed ${changes.length} ${changes.length === 1 ? 'task' : 'tasks'} to ${plan.label}.${unchangedNote}`
+        if (plan.operation === 'color') message = `Done—I changed ${changes.length} ${changes.length === 1 ? 'task' : 'tasks'} to ${plan.color}.${unchangedNote}`
+        await complete(message, finishedTaskActionState(plan.tasks.at(-1)?.id || ''))
         return true
       }
 
@@ -1899,10 +1957,21 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         }
       }
 
+      const localRoute = getLocalCommandRoute({
+        text,
+        preliminary,
+        bulkMoveRequest,
+        namedTaskMoveRequest,
+        completionRequest,
+        namedCompletionRequest,
+        namedDeletionRequest,
+        pendingAction: savedPendingAction,
+      })
+      if (localRoute.bypassGemini) recordLocalCommandBypass(localRoute.kind)
       const useContextScheduling = !bulkMoveRequest.isBulk && contextSchedulingActionsEnabled() && shouldInterpretContextScheduling({ text, schedulingState, preliminary })
       const useContextTaskAction = !bulkMoveRequest.isBulk && contextTaskActionsEnabled() && shouldInterpretContextTaskAction({ text, schedulingState })
-      const shouldRequestAction = !forcedAction && !bulkMoveRequest.isBulk && (useContextScheduling || useContextTaskAction || actionIntentShadowEnabled())
-      let action = forcedAction
+      const shouldRequestAction = !forcedAction && !localRoute.bypassGemini && !bulkMoveRequest.isBulk && (useContextScheduling || useContextTaskAction || actionIntentShadowEnabled())
+      let action = forcedAction || localRoute.action
       if (shouldRequestAction) {
         const actionContext = buildCompactActionContext({
           message: text,
@@ -2124,13 +2193,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
 
       const creationRequest = parseTaskCreationIntent(text)
       const directSchedule = parseDirectScheduleRequest(text, tasks, weekDays, aiMemory.defaultDuration || 60)
-      const namedTaskMoveRequest = parseNamedTaskMoveRequest(text, tasks, weekDays)
-      const previousUserMessage = [...messages].reverse().find((message) => message.role === 'user')
-      const previousCompletionRequest = parseTaskCompletionRequest(previousUserMessage?.text, weekDays)
-      let completionRequest = parseTaskCompletionRequest(text, weekDays)
-      completionRequest = applyTaskCompletionContext(completionRequest, text, previousCompletionRequest, schedulingState.lastAction)
-      const namedCompletionRequest = parseNamedTaskCompletionRequest(text, tasks)
-      const namedDeletionRequest = parseNamedTaskDeletionRequest(text, tasks)
       const namedPriorityRequest = parseNamedTaskPriorityRequest(text, tasks)
       const requestedAttributes = parseTaskAttributesIntent(text)
       const requestedAttributeDescription = describeRequestedTaskAttributes(requestedAttributes)
@@ -2179,7 +2241,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         return
       }
 
-      if (creationRequest.isCreation) {
+      if (creationRequest.isCreation && !completionRequest.isCompletion) {
         if (!creationRequest.title) {
           await complete('What should I call the new task?', { ...EMPTY_SCHEDULING_STATE })
           return
@@ -2382,12 +2444,16 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
 
       if (completionRequest.isBulk) {
         const contextualTaskIds = new Set(Array.isArray(completionRequest.targetTaskIds) ? completionRequest.targetTaskIds : [])
+        const completionDays = Array.isArray(completionRequest.days) && completionRequest.days.length
+          ? completionRequest.days
+          : completionRequest.day ? [completionRequest.day] : []
+        const completionDateKeys = new Set(completionDays.map((day) => day.key))
         const targetTasks = contextualTaskIds.size
           ? tasks.filter((task) => contextualTaskIds.has(task.id))
-          : completionRequest.day
-            ? tasks.filter((task) => task.date === completionRequest.day.key)
+          : completionDateKeys.size
+            ? tasks.filter((task) => completionDateKeys.has(task.date))
             : tasks
-        const targetLabel = completionRequest.day?.label || completionRequest.targetLabel || ''
+        const targetLabel = completionDays.map((day) => day.label).join(' and ') || completionRequest.targetLabel || ''
         const targetScope = targetLabel ? ` on ${targetLabel}` : contextualTaskIds.size ? ' from the last change' : ''
         if (!targetTasks.length) {
           await complete(targetLabel
