@@ -908,6 +908,14 @@ function AssistantGuide({ assistantName }) {
   </div>
 }
 
+function ChatSizeIcon({ expanded }) {
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    {expanded
+      ? <><path d="M9 4v5H4" /><path d="m4 9 5-5" /><path d="M15 20v-5h5" /><path d="m20 15-5 5" /></>
+      : <><path d="M9 4H4v5" /><path d="m4 4 5 5" /><path d="M15 20h5v-5" /><path d="m20 20-5-5" /></>}
+  </svg>
+}
+
 function FloatingAssistant({
   assistantName,
   assistantMood,
@@ -929,6 +937,7 @@ function FloatingAssistant({
   const [popupMounted, setPopupMounted] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   const [guideMounted, setGuideMounted] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const [dragPoint, setDragPoint] = useState(null)
   const [settling, setSettling] = useState(false)
   const [settleTilt, setSettleTilt] = useState(0)
@@ -951,14 +960,15 @@ function FloatingAssistant({
   const transcriptRef = useRef(null)
   const guideRef = useRef(null)
   const guideButtonRef = useRef(null)
+  const resizeButtonRef = useRef(null)
   const dragRef = useRef(null)
   const suppressClickRef = useRef(false)
   const modelMessageCount = messages.filter((message) => message.role === 'model').length
   const hasUnreadReply = !open && modelMessageCount > lastSeenModelCount
   const headX = dragPoint?.x ?? position.x
   const headY = dragPoint?.y ?? position.y
-  const popupHeight = Math.min(520, viewport.height - 24)
-  const popupWidth = Math.max(200, Math.min(368, viewport.width - 24))
+  const popupHeight = Math.min(expanded ? 720 : 520, viewport.height - 24)
+  const popupWidth = Math.max(200, Math.min(expanded ? 640 : 368, viewport.width - 24))
   const popupSide = headX + 28 >= viewport.width / 2 ? 'right' : 'left'
   const desiredPopupLeft = popupSide === 'right' ? headX - popupWidth - 12 : headX + 68
   const popupLeft = Math.max(12, Math.min(viewport.width - popupWidth - 12, desiredPopupLeft))
@@ -1038,7 +1048,8 @@ function FloatingAssistant({
       if (guideOpen) {
         const insideGuide = guideRef.current?.contains(event.target)
         const insideGuideButton = guideButtonRef.current?.contains(event.target)
-        if (!insideGuide && !insideGuideButton) setGuideOpen(false)
+        const insideResizeButton = resizeButtonRef.current?.contains(event.target)
+        if (!insideGuide && !insideGuideButton && !insideResizeButton) setGuideOpen(false)
         if (!insideRoot) return
       }
       if (!insideRoot) setOpen(false)
@@ -1125,11 +1136,12 @@ function FloatingAssistant({
   const popupStyle = { top: popupTop, left: popupLeft, width: popupWidth, height: popupHeight }
 
   return <div className={`schedme-chathead-layer is-${popupSide} ${open ? 'is-open' : 'is-closed'}`} ref={rootRef}>
-    {popupMounted && <section className={`schedme-chat-popup ${open ? 'is-opening' : 'is-closing'}`} style={popupStyle} role="dialog" aria-modal="false" aria-label={`Chat with ${assistantName}`}>
+    {popupMounted && <section className={`schedme-chat-popup ${open ? 'is-opening' : 'is-closing'} ${expanded ? 'is-expanded' : 'is-compact'}`} style={popupStyle} role="dialog" aria-modal="false" aria-label={`Chat with ${assistantName}`}>
       <header className="schedme-chat-popup-header">
         <span className="schedme-chat-popup-avatar" aria-hidden="true">{assistantName.charAt(0).toUpperCase()}</span>
         <div className="schedme-chat-popup-identity"><strong>{assistantName}</strong><small>{assistantMood} planning companion</small></div>
         <div className="schedme-chat-popup-actions">
+          <button ref={resizeButtonRef} type="button" className={expanded ? 'is-active' : ''} onClick={() => setExpanded((current) => !current)} aria-pressed={expanded} aria-label={expanded ? `Restore compact ${assistantName} chat` : `Expand ${assistantName} chat`} title={expanded ? 'Restore compact chat' : 'Expand chat'}><ChatSizeIcon expanded={expanded} /></button>
           <button ref={guideButtonRef} type="button" className={guideOpen ? 'is-active' : ''} onClick={() => setGuideOpen((current) => !current)} aria-expanded={guideOpen} aria-controls="schedme-assistant-guide" aria-label={guideOpen ? `Close ${assistantName} guide` : `Open ${assistantName} guide`} title="How to use SchedMe AI">?</button>
           <button type="button" onClick={() => setOpen(false)} aria-label="Close SchedMe chat">×</button>
         </div>
