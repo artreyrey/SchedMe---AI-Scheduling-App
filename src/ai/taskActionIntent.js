@@ -61,7 +61,7 @@ export function parseNamedTaskDeletionRequest(value, tasks) {
   const command = /\b(?:delete|remove|erase)\b/i.exec(text)
   const isCancellationFlow = /\b(?:cancelled|canceled|called off|not happening anymore|no longer happening)\b/i.test(text)
   const onlyRemovesFromCalendar = /\bfrom\s+(?:(?:the|my)\s+)?(?:schedule|calendar)\b/i.test(text)
-  if (!command || isCancellationFlow || onlyRemovesFromCalendar || /\b(?:all|every)\s+(?:of\s+)?(?:my\s+)?tasks?\b/i.test(text)) {
+  if (!command || isCancellationFlow || onlyRemovesFromCalendar || /\b(?:all|every)\s+(?:of\s+)?(?:(?:my|our|the)\s+)?tasks?\b/i.test(text)) {
     return { isDeletion: false, isMultiple: false, tasks: [], unmatchedNames: [], ambiguousNames: [] }
   }
 
@@ -93,9 +93,9 @@ export function parseBulkTaskDeletionRequest(value, now = new Date(), weekDays =
   if (!day?.key || day.ambiguous || !day.token) return { isBulkDeletion: false, day: null }
 
   const dayToken = escapeRegularExpression(day.token)
-  const explicitlyAll = /\b(?:all|every)\s+(?:of\s+)?(?:my\s+)?(?:tasks|todos)\b/i.test(text)
-  const dayOwnsTaskPhrase = new RegExp(`\\b(?:my\\s+)?${dayToken}\\s+(?:scheduled\\s+)?(?:tasks|todos)\\b`, 'i').test(text)
-  const taskPhraseOwnsDay = new RegExp(`\\b(?:delete|remove|erase)\\s+(?:my\\s+)?(?:tasks|todos)\\s+(?:scheduled\\s+)?(?:on|for|from)\\s+${dayToken}\\b`, 'i').test(text)
+  const explicitlyAll = /\b(?:all|every)\s+(?:of\s+)?(?:(?:my|our|the)\s+)?(?:tasks|todos)\b/i.test(text)
+  const dayOwnsTaskPhrase = new RegExp(`\\b(?:(?:my|our|the)\\s+)?${dayToken}\\s+(?:scheduled\\s+)?(?:tasks|todos)\\b`, 'i').test(text)
+  const taskPhraseOwnsDay = new RegExp(`\\b(?:delete|remove|erase)\\s+(?:(?:my|our|the)\\s+)?(?:tasks|todos)\\s+(?:scheduled\\s+)?(?:on|for|from)\\s+${dayToken}\\b`, 'i').test(text)
   if (!explicitlyAll && !dayOwnsTaskPhrase && !taskPhraseOwnsDay) {
     return { isBulkDeletion: false, day: null }
   }

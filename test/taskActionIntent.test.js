@@ -33,6 +33,16 @@ test('recognizes date-scoped bulk deletion without treating the date as a task t
   assert.equal(explicitRequest.day.key, '2026-10-27')
 })
 
+test('recognizes all of our tasks on a weekday and calendar date', () => {
+  const now = new Date(2026, 10, 4, 12)
+  const text = 'can you remove all of our tasks on wednesday november 4?'
+  const request = parseBulkTaskDeletionRequest(text, now)
+
+  assert.equal(request.isBulkDeletion, true)
+  assert.equal(request.day.key, '2026-11-04')
+  assert.equal(parseNamedTaskDeletionRequest(text, tasks).isDeletion, false)
+})
+
 test('keeps unsafe or non-destructive date requests out of bulk deletion', () => {
   const now = new Date(2026, 9, 29, 12)
   assert.equal(parseBulkTaskDeletionRequest('delete all my tasks', now).isBulkDeletion, false)
