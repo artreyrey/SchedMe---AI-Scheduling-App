@@ -97,6 +97,26 @@ test('voice-like commands tolerate small task transcription errors', () => {
   assert.deepEqual(result.time, { startTime: '11:00', endTime: '12:00', matchedText: '11-12pm' })
 })
 
+test('parses a bare add command with a repeated-letter tomorrow typo', () => {
+  const now = new Date(2026, 10, 4, 12, 0)
+  const parsed = parseDirectScheduleRequest(
+    'add make chapter 2 rrl tommoroww at 11am-3 pm',
+    tasks,
+    getMondayWeek(0, now),
+    60,
+    now,
+  )
+
+  assert.equal(parsed.isDirect, true)
+  assert.equal(parsed.isComplete, true)
+  assert.equal(parsed.title, 'make chapter 2 rrl')
+  assert.equal(parsed.day.key, '2026-11-05')
+  assert.deepEqual(
+    { startTime: parsed.time.startTime, endTime: parsed.time.endTime },
+    { startTime: '11:00', endTime: '15:00' },
+  )
+})
+
 test('understands a weekday followed by conversational punctuation', () => {
   assert.equal(parseDay('Can you add it on Tuesday?', getMondayWeek()).label, 'Tuesday')
 })

@@ -9,7 +9,7 @@ const DAY_ALIASES = new Map([
   ['su', 6], ['sun', 6], ['sunday', 6],
 ])
 
-const DAY_TOKEN_PATTERN = 'today|tomorrow|tommorow|tomorow|monday|monay|tuesday|teusday|tusday|wednesday|wensday|wenesday|wednsday|thursday|thurday|thrusday|friday|firday|saturday|saterday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun'
+const DAY_TOKEN_PATTERN = 'today|tomorrow|tommorow|tommoroww|tomorow|monday|monay|tuesday|teusday|tusday|wednesday|wensday|wenesday|wednsday|thursday|thurday|thrusday|friday|firday|saturday|saterday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun'
 
 const MONTH_INDEX = new Map([
   ['january', 0], ['jan', 0], ['february', 1], ['feb', 1], ['march', 2], ['mar', 2],
@@ -116,7 +116,7 @@ export function parseDay(value, weekDays = getMondayWeek(), now = new Date()) {
     const label = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'short', day: 'numeric' }).format(targetDate)
     return matching ? { ...matching, label: matching.label || label, token: relative[0] } : { date: targetDate, key, label, token: relative[0] }
   }
-  if (/\b(?:tomorrow|tommorow|tomorow)\b/.test(text)) {
+  if (/\b(?:tomorrow|tommorow|tommoroww|tomorow)\b/.test(text)) {
     const tomorrowKey = localDateKey(addDays(now, 1))
     const matching = weekDays.find((day) => day.key === tomorrowKey)
     return matching ? { ...matching, label: matching.label || 'Tomorrow', token: 'tomorrow' } : { key: tomorrowKey, label: 'Tomorrow', token: 'tomorrow' }
@@ -347,7 +347,7 @@ function wordSimilarity(left, right) {
   return 1 - (editDistance(left, right) / Math.max(left.length, right.length))
 }
 
-const TASK_COMMAND_WORDS = new Set(['schedule', 'scheduled', 'move', 'remove', 'task', 'tasks', 'from', 'on', 'at', 'for', 'the', 'my', 'please', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'today', 'tomorrow', 'tommorow', 'tomorow'])
+const TASK_COMMAND_WORDS = new Set(['schedule', 'scheduled', 'move', 'remove', 'task', 'tasks', 'from', 'on', 'at', 'for', 'the', 'my', 'please', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'today', 'tomorrow', 'tommorow', 'tommoroww', 'tomorow'])
 
 function fuzzyTaskScore(value, title) {
   const queryWords = normalizeTaskText(value).split(' ').filter((word) => word.length > 2 && !TASK_COMMAND_WORDS.has(word))
@@ -494,7 +494,8 @@ export function parseDirectScheduleRequest(value, tasks, weekDays, defaultDurati
   const creationVerb = /\b(?:create|add|make)\b/i.exec(text)
   const taskMention = /\b(?:task|todo)\b/i.exec(text)
   const isCreationCommand = Boolean(creationVerb && taskMention && creationVerb.index < taskMention.index)
-  const verb = isCreationCommand ? null : /\b(?:schedule|book|place|put)\b/i.exec(text)
+  const bareCreationVerb = creationVerb && !taskMention && (day || time) ? creationVerb : null
+  const verb = isCreationCommand ? null : bareCreationVerb || /\b(?:schedule|book|place|put)\b/i.exec(text)
   const slashParts = text.split('/').map((part) => part.trim()).filter(Boolean)
   let title = ''
 

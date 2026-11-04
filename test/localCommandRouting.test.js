@@ -13,6 +13,15 @@ test('bypasses Gemini for deterministic completion, deletion, and grouped moves'
   assert.equal(getLocalCommandRoute({ bulkMoveRequest: { isBulk: true } }).kind, 'bulk_move')
 })
 
+test('bypasses Gemini for a directly parsed schedule or task creation', () => {
+  assert.equal(getLocalCommandRoute({
+    directScheduleRequest: { isDirect: true, isComplete: true, task: null },
+  }).kind, 'create_schedule')
+  assert.equal(getLocalCommandRoute({
+    directScheduleRequest: { isDirect: true, isComplete: true, task },
+  }).kind, 'single_schedule')
+})
+
 test('creates a local structured action for a clear single-task move or time change', () => {
   const moved = getLocalCommandRoute({
     text: 'move practice drawing to Tuesday',

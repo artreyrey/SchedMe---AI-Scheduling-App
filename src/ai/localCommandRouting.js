@@ -33,6 +33,7 @@ export function getLocalCommandRoute({
   namedTaskMoveRequest = {},
   completionRequest = {},
   namedCompletionRequest = {},
+  directScheduleRequest = {},
   bulkDeletionRequest = {},
   namedDeletionRequest = {},
   pendingAction = null,
@@ -40,6 +41,7 @@ export function getLocalCommandRoute({
   if (pendingAction) return { bypassGemini: false, kind: '', action: null }
   if (bulkMoveRequest.isBulk) return { bypassGemini: true, kind: 'bulk_move', action: null }
   if (namedTaskMoveRequest.isMultiple) return { bypassGemini: true, kind: 'named_move', action: null }
+  if (directScheduleRequest.isDirect) return { bypassGemini: true, kind: directScheduleRequest.task ? 'single_schedule' : 'create_schedule', action: null }
   if (bulkDeletionRequest.isBulkDeletion) return { bypassGemini: true, kind: 'bulk_delete', action: null }
   if (namedDeletionRequest.isDeletion) return { bypassGemini: true, kind: 'delete', action: null }
   if (completionRequest.isCompletion || namedCompletionRequest.isMultiple) {

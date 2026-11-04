@@ -1544,6 +1544,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
     const preliminary = parseSchedulingInput(text, tasks, weekDays, schedulingState.activeTaskId, aiMemory.defaultDuration || 60)
     const bulkMoveRequest = parseConversationalBulkMoveRequest(text, messages)
     const namedTaskMoveRequest = parseNamedTaskMoveRequest(text, tasks, weekDays)
+    const directSchedule = parseDirectScheduleRequest(text, tasks, weekDays, aiMemory.defaultDuration || 60)
     const previousUserMessage = [...messages].reverse().find((message) => message.role === 'user')
     const previousCompletionRequest = parseTaskCompletionRequest(previousUserMessage?.text, weekDays)
     let completionRequest = parseTaskCompletionRequest(text, weekDays)
@@ -1882,6 +1883,7 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
         namedTaskMoveRequest,
         completionRequest,
         namedCompletionRequest,
+        directScheduleRequest: directSchedule,
         bulkDeletionRequest,
         namedDeletionRequest,
         pendingAction: savedPendingAction,
@@ -2114,7 +2116,6 @@ function Dashboard({ user, onSignOut, theme, onSelectTheme }) {
       }
 
       const creationRequest = parseTaskCreationIntent(text)
-      const directSchedule = parseDirectScheduleRequest(text, tasks, weekDays, aiMemory.defaultDuration || 60)
       const namedPriorityRequest = parseNamedTaskPriorityRequest(text, tasks)
       const requestedAttributes = parseTaskAttributesIntent(text)
       const requestedAttributeDescription = describeRequestedTaskAttributes(requestedAttributes)
