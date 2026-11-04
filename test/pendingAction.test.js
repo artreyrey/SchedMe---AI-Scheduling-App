@@ -50,6 +50,32 @@ test('keeps a pending creation when a time reply is classified as scheduling', (
   assert.deepEqual(merged.patch, { title: 'Read book', date: '2026-11-03', startTime: '18:00', endTime: '19:00' })
 })
 
+test('does not let a time-only follow-up replace the pending task title with structured data', () => {
+  const pending = createPendingAction({
+    ...action,
+    intent: 'create_task',
+    target: { taskId: '', taskIds: [], query: '' },
+    patch: { title: 'Solar finalization', date: '2026-11-05' },
+  }, { missingFields: ['startTime', 'endTime'] }, 1_000)
+  const merged = mergePendingAction({
+    ...action,
+    intent: 'schedule_task',
+    target: { taskId: '', taskIds: [], query: '' },
+    patch: {
+      title: 'Solar finalization, date is 2026-11-05, startTime is 08:00, endTime is 10:00',
+      startTime: '08:00',
+      endTime: '10:00',
+    },
+  }, pending, 2_000)
+  assert.equal(merged.intent, 'create_task')
+  assert.deepEqual(merged.patch, {
+    title: 'Solar finalization',
+    date: '2026-11-05',
+    startTime: '08:00',
+    endTime: '10:00',
+  })
+})
+
 test('allows a clearly different task request to replace a pending action', () => {
   const pending = createPendingAction(action, { missingFields: ['category'] }, 1_000)
   const merged = mergePendingAction({

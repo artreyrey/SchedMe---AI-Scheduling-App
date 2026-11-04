@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '../firebase/config.js'
 import { getTaskOrderField } from '../taskListOrder.js'
+import { sanitizeTaskTitle } from '../ai/taskTextSanitizer.js'
 
 function tasksCollection(uid) {
   if (!db || !uid) throw new Error('Your task storage is not configured yet.')
@@ -26,7 +27,10 @@ function safeTaskColor(color) {
 export function subscribeToTasks(uid, onTasks, onError) {
   try {
     return onSnapshot(query(tasksCollection(uid), orderBy('createdAt', 'desc')), (snapshot) => {
-      onTasks(snapshot.docs.map((taskDoc) => ({ id: taskDoc.id, ...taskDoc.data() })))
+      onTasks(snapshot.docs.map((taskDoc) => {
+        const data = taskDoc.data()
+        return { id: taskDoc.id, ...data, title: sanitizeTaskTitle(data.title) }
+      }))
     }, onError)
   } catch (error) {
     onError(error)
@@ -35,7 +39,7 @@ export function subscribeToTasks(uid, onTasks, onError) {
 }
 
 export function createTask(uid, title, category, alsoPriority = false, color = '', colorMode = 'automatic') {
-  const cleanedTitle = title.trim()
+  const cleanedTitle = sanitizeTaskTitle(title)
   if (!cleanedTitle || cleanedTitle.length > 240) throw new Error('Enter a task under 240 characters.')
   const urgent = category === 'urgent' || (category === 'important' && alsoPriority)
   const important = category === 'important' || (category === 'urgent' && alsoPriority)
@@ -53,7 +57,7 @@ export function createTask(uid, title, category, alsoPriority = false, color = '
 }
 
 export function createScheduledTask(uid, { title, date, startTime, endTime, category = 'notUrgent', alsoPriority = false, completed = false, color = '', colorMode = 'automatic' }) {
-  const cleanedTitle = title.trim()
+  const cleanedTitle = sanitizeTaskTitle(title)
   if (!cleanedTitle || cleanedTitle.length > 240) throw new Error('Enter a task under 240 characters.')
   const normalizedCategory = ['urgent', 'important', 'notUrgent'].includes(category) ? category : 'notUrgent'
   const urgent = normalizedCategory === 'urgent' || (normalizedCategory === 'important' && alsoPriority)
@@ -77,7 +81,7 @@ export function createScheduledTask(uid, { title, date, startTime, endTime, cate
 }
 
 export function updateScheduledTask(uid, taskId, { title, date, startTime, endTime, completed = false, color = '', colorMode = 'automatic', category = 'notUrgent' }) {
-  const cleanedTitle = title.trim()
+  const cleanedTitle = sanitizeTaskTitle(title)
   if (!cleanedTitle || cleanedTitle.length > 240) throw new Error('Enter a task under 240 characters.')
   if (!db || !uid) throw new Error('Your task storage is not configured yet.')
   const normalizedCategory = ['urgent', 'important', 'notUrgent'].includes(category) ? category : 'notUrgent'
@@ -98,7 +102,7 @@ export function updateScheduledTask(uid, taskId, { title, date, startTime, endTi
 }
 
 export function updateTaskDetails(uid, taskId, { title, completed = false, color = '', colorMode = 'automatic', category = 'free', showInInbox = false, date = '', startTime = '', endTime = '' }) {
-  const cleanedTitle = title.trim()
+  const cleanedTitle = sanitizeTaskTitle(title)
   if (!cleanedTitle || cleanedTitle.length > 240) throw new Error('Enter a task under 240 characters.')
   if (!db || !uid) throw new Error('Your task storage is not configured yet.')
   const scheduled = Boolean(date && startTime && endTime)

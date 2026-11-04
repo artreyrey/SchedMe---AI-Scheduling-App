@@ -1,4 +1,5 @@
 import { findTaskMatch, minutes } from './schedulingIntent.js'
+import { sanitizeTaskTitle } from './taskTextSanitizer.js'
 
 const CONTEXT_TASK_INTENTS = new Set([
   'create_task',
@@ -121,7 +122,7 @@ export function planContextTaskAction({ action, tasks = [], schedulingState = {}
   if (action.scope !== 'single') return { status: 'unsupported' }
 
   if (action.intent === 'create_task') {
-    const title = String(patch.title || '').trim()
+    const title = sanitizeTaskTitle(patch.title)
     if (!title) return { status: 'clarify', reason: 'missing_title', missingFields: ['title'] }
     const hasDate = Boolean(patch.date)
     const hasTime = Boolean(patch.startTime || patch.endTime)

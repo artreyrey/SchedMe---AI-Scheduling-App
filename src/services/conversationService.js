@@ -1,6 +1,7 @@
 import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
 import { db } from '../firebase/config.js'
 import { normalizePendingAction } from '../ai/pendingAction.js'
+import { sanitizeAssistantTaskText } from '../ai/taskTextSanitizer.js'
 
 const MAX_SAVED_MESSAGES = 120
 
@@ -81,7 +82,10 @@ export function subscribeToConversation(uid, onConversation, onError) {
       const schedulingState = normalizeSchedulingState(data.schedulingState)
       if (typeof data.lastGreetingDate === 'string' && data.lastGreetingDate) schedulingState.lastGreetingDate = data.lastGreetingDate
       onConversation({
-        messages: Array.isArray(data.chatHistory) ? data.chatHistory.slice(-MAX_SAVED_MESSAGES) : [],
+        messages: Array.isArray(data.chatHistory) ? data.chatHistory.slice(-MAX_SAVED_MESSAGES).map((message) => ({
+          ...message,
+          text: message?.role === 'model' ? sanitizeAssistantTaskText(message.text) : String(message?.text || ''),
+        })) : [],
         schedulingState,
         interactionProfile: normalizeInteractionProfile(data.interactionProfile),
         availability: normalizeAvailability(data.availability),
@@ -97,7 +101,7 @@ export function saveConversation(uid, messages, schedulingState, interactionProf
   const normalizedState = normalizeSchedulingState(schedulingState)
   const safeMessages = jsonSafe(messages.slice(-MAX_SAVED_MESSAGES).map(({ role, text, plan, planApplied, kind, date, voiceId, voiceDurationSeconds }) => ({
     role: role === 'user' ? 'user' : 'model',
-    text: String(text || '').slice(0, 4000),
+    text: (role === 'user' ? String(text || '') : sanitizeAssistantTaskText(text)).slice(0, 4000),
     ...(plan ? { plan } : {}),
     ...(planApplied ? { planApplied: true } : {}),
     ...(kind === 'daily-greeting' || kind === 'voice' ? { kind } : {}),

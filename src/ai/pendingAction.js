@@ -1,3 +1,5 @@
+import { sanitizeTaskTitle } from './taskTextSanitizer.js'
+
 const PENDING_ACTION_TTL_MS = 30 * 60 * 1000
 
 function safeString(value, maximum = 240) {
@@ -21,12 +23,14 @@ export function normalizePendingAction(value, now = Date.now()) {
   if (!value || typeof value !== 'object') return null
   const expiresAt = Number(value.expiresAt)
   if (!Number.isFinite(expiresAt) || expiresAt <= now) return null
+  const patch = safeRecord(value.patch, ['title', 'date', 'startTime', 'endTime', 'category', 'color', 'completed', 'timeShiftMinutes', 'durationMinutes'])
+  if ('title' in patch) patch.title = sanitizeTaskTitle(patch.title)
   return {
     id: safeString(value.id, 80) || `pending-${Math.round(Number(value.createdAt) || now)}`,
     intent: safeString(value.intent, 40),
     scope: safeString(value.scope, 20) || 'single',
     target: safeTarget(value.target),
-    patch: safeRecord(value.patch, ['title', 'date', 'startTime', 'endTime', 'category', 'color', 'completed', 'timeShiftMinutes', 'durationMinutes']),
+    patch,
     constraints: safeRecord(value.constraints, ['date', 'afterTime', 'beforeTime', 'durationMinutes', 'freeTimeOnly']),
     missingFields: Array.isArray(value.missingFields) ? [...new Set(value.missingFields.map((item) => safeString(item, 40)).filter(Boolean))].slice(0, 8) : [],
     reason: safeString(value.reason, 40),
@@ -67,6 +71,8 @@ export function mergePendingAction(action, pendingValue, now = Date.now()) {
     || ['clarify', 'chat', 'out_of_scope'].includes(action.intent)
     || targetContinues
   const taskIds = currentTarget.taskIds?.length ? currentTarget.taskIds : pending.target.taskIds
+  const actionPatch = { ...(action.patch || {}) }
+  if (continuePending && pending.intent === 'create_task' && action.intent !== 'create_task') delete actionPatch.title
   return {
     ...action,
     intent: continuePending ? pending.intent : action.intent,
@@ -76,7 +82,7 @@ export function mergePendingAction(action, pendingValue, now = Date.now()) {
       taskIds,
       query: currentTarget.query || pending.target.query,
     },
-    patch: { ...pending.patch, ...action.patch },
+    patch: { ...pending.patch, ...actionPatch },
     constraints: { ...pending.constraints, ...action.constraints },
     destructive: pending.destructive || action.destructive,
     pendingActionId: pending.id,

@@ -1,6 +1,7 @@
 import { collection, doc, runTransaction, Timestamp } from 'firebase/firestore'
 import { db } from '../firebase/config.js'
 import { validateUndoSnapshots } from './operationHistory.js'
+import { sanitizeTaskTitle } from '../ai/taskTextSanitizer.js'
 
 function taskDocument(uid, taskId) {
   return doc(db, 'users', uid, 'tasks', taskId)
@@ -17,6 +18,15 @@ function userDocument(uid) {
 function withoutId(value) {
   if (!value || typeof value !== 'object') return null
   const { id, ...data } = value
+  return data
+}
+
+function safeTaskData(value) {
+  const data = withoutId(value) || {}
+  if ('title' in data) {
+    data.title = sanitizeTaskTitle(data.title)
+    if (!data.title) throw new Error('The task needs a valid title.')
+  }
   return data
 }
 
@@ -59,12 +69,12 @@ export async function commitTaskOperation(uid, { requestId, type, changes, descr
       let after = null
       if (change.kind === 'create') {
         if (before) throw operationError('operation/task-already-exists', 'That task was already created.')
-        after = { ...withoutId(change.data), createdAt: change.data?.createdAt || now, updatedAt: now }
+        after = { ...safeTaskData(change.data), createdAt: change.data?.createdAt || now, updatedAt: now }
         transaction.set(taskRef, after)
       } else if (change.kind === 'update') {
         if (!before) throw operationError('operation/task-not-found', 'The task changed or no longer exists.')
         const removeFields = new Set(Array.isArray(change.removeFields) ? change.removeFields : [])
-        after = Object.fromEntries(Object.entries({ ...before, ...withoutId(change.data), updatedAt: now }).filter(([key]) => !removeFields.has(key)))
+        after = Object.fromEntries(Object.entries({ ...before, ...safeTaskData(change.data), updatedAt: now }).filter(([key]) => !removeFields.has(key)))
         transaction.set(taskRef, after)
       } else if (change.kind === 'delete') {
         if (!before) throw operationError('operation/task-not-found', 'The task was already deleted.')

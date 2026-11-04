@@ -1,3 +1,5 @@
+import { sanitizeTaskTitle } from './taskTextSanitizer.js'
+
 export const ACTION_INTENTS = Object.freeze([
   'create_task',
   'schedule_task',
@@ -258,7 +260,7 @@ export function normalizeActionIntent(value, candidateTaskIds = []) {
   const validIds = [...new Set(suppliedIds.filter((id) => allowedIds.has(id)))]
   const invalidTargetIds = [...new Set(suppliedIds.filter((id) => !allowedIds.has(id)))]
   const patch = {}
-  const title = safeString(value.patch?.title, 240)
+  const title = sanitizeTaskTitle(value.patch?.title)
   const date = safeDate(value.patch?.date)
   const startTime = safeTime(value.patch?.startTime)
   const endTime = safeTime(value.patch?.endTime)

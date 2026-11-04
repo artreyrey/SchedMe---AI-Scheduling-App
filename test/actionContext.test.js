@@ -106,6 +106,24 @@ test('normalizes patches, preserves omitted fields, and rejects invented task ID
   assert.equal(normalized.preserveUnspecified, true)
 })
 
+test('removes structured scheduling metadata from a Gemini task title', () => {
+  const normalized = normalizeActionIntent({
+    intent: 'create_task',
+    confidence: 0.95,
+    scope: 'single',
+    target: {},
+    patch: {
+      title: 'Solar finalization, date is 2026-11-05, startTime is 08:00, endTime is 10:00',
+      date: '2026-11-05',
+      startTime: '08:00',
+      endTime: '10:00',
+    },
+    missingFields: [],
+  })
+  assert.equal(normalized.patch.title, 'Solar finalization')
+  assert.equal(normalized.patch.date, '2026-11-05')
+})
+
 test('automatically marks deletion as destructive', () => {
   const normalized = normalizeActionIntent({
     intent: 'delete_task',
